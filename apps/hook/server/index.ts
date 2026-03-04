@@ -240,7 +240,7 @@ if (args[0] === "review") {
           hookEventName: "PermissionRequest",
           decision: {
             behavior: "deny",
-            message: result.feedback || "Plan changes requested",
+            message: `YOUR PLAN WAS NOT APPROVED. You MUST revise the plan to address ALL of the feedback below before calling ExitPlanMode again. Do not resubmit the same plan — use the Edit tool to make targeted changes to the plan file first.\n\n${result.feedback || "Plan changes requested"}`,
           },
         },
       })
