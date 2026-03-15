@@ -6,8 +6,11 @@ import type { ReviewSnapshotMeta } from "@plannotator/shared/types";
 import {
   applyCheckpointAction,
   buildDeltaPatch,
+  ensureSnapshotRecord,
+  getFileRevisionStrip,
   getReviewState,
   hashPatch,
+  resolveFileRevisionSnapshot,
   type CurrentDiffFile,
 } from "./review-state";
 
@@ -193,6 +196,164 @@ describe("getReviewState", () => {
 
     const rewritten = JSON.parse(readFileSync(join(projectDir, "checkpoints.json"), "utf-8"));
     expect(rewritten).toEqual({ checkpoints: {} });
+  });
+});
+
+describe("file revision strip", () => {
+  test("pins current snapshot as strip head", () => {
+    const rootDir = makeTempDir();
+    const project = "plannotator";
+    const filePath = "src/review.ts";
+
+    const olderCurrent = makeSnapshot({
+      snapshotId: "rev_current",
+      createdAt: "2026-03-14T21:00:00.000Z",
+    });
+    const newerHistorical = makeSnapshot({
+      snapshotId: "rev_newer",
+      createdAt: "2026-03-14T22:00:00.000Z",
+    });
+
+    ensureSnapshotRecord({
+      project,
+      snapshot: olderCurrent,
+      files: [{
+        filePath,
+        patch: "diff --git a/src/review.ts b/src/review.ts\n",
+        patchHash: hashPatch("cur"),
+        baselineNewContent: "current\n",
+      }],
+      rootDir,
+    });
+
+    ensureSnapshotRecord({
+      project,
+      snapshot: newerHistorical,
+      files: [{
+        filePath,
+        patch: "diff --git a/src/review.ts b/src/review.ts\n",
+        patchHash: hashPatch("newer"),
+        baselineNewContent: "newer\n",
+      }],
+      rootDir,
+    });
+
+    const strip = getFileRevisionStrip({
+      project,
+      reviewerId: "swift-falcon-tater",
+      snapshot: olderCurrent,
+      filePath,
+      rootDir,
+    });
+
+    expect(strip.headSnapshotId).toBe("rev_current");
+    expect(strip.cells[strip.cells.length - 1]?.snapshotId).toBe("rev_current");
+  });
+
+  test("returns ordered cells and reviewed default floor", () => {
+    const rootDir = makeTempDir();
+    const project = "plannotator";
+
+    const snapshot1 = makeSnapshot({
+      snapshotId: "rev_001",
+      createdAt: "2026-03-14T22:00:00.000Z",
+    });
+    const snapshot2 = makeSnapshot({
+      snapshotId: "rev_002",
+      createdAt: "2026-03-14T23:00:00.000Z",
+    });
+
+    const filePath = "src/review.ts";
+
+    ensureSnapshotRecord({
+      project,
+      snapshot: snapshot1,
+      files: [
+        {
+          filePath,
+          patch: "diff --git a/src/review.ts b/src/review.ts\n@@ -1 +1 @@\n-a\n+b\n",
+          patchHash: hashPatch("patch-1"),
+          baselineNewContent: "export const version = 1;\n",
+        },
+      ],
+      rootDir,
+    });
+
+    ensureSnapshotRecord({
+      project,
+      snapshot: snapshot2,
+      files: [
+        {
+          filePath,
+          patch: "diff --git a/src/review.ts b/src/review.ts\n@@ -1 +1 @@\n-b\n+c\n",
+          patchHash: hashPatch("patch-2"),
+          baselineNewContent: "export const version = 2;\n",
+        },
+      ],
+      rootDir,
+    });
+
+    const currentFile = makeFile(filePath, "diff --git a/src/review.ts b/src/review.ts\n@@ -1 +1 @@\n-b\n+c\n");
+
+    applyCheckpointAction({
+      project,
+      reviewerId: "swift-falcon-tater",
+      filePath,
+      action: "mark-reviewed",
+      snapshot: snapshot2,
+      currentFile,
+      baselineNewContent: "export const version = 2;\n",
+      checkpointSnapshotId: "rev_001",
+      checkpointPatchHash: hashPatch("patch-1"),
+      checkpointBaselineNewContent: "export const version = 1;\n",
+      rootDir,
+    });
+
+    const strip = getFileRevisionStrip({
+      project,
+      reviewerId: "swift-falcon-tater",
+      snapshot: snapshot2,
+      filePath,
+      rootDir,
+    });
+
+    expect(strip.cells).toHaveLength(2);
+    expect(strip.cells[0].snapshotId).toBe("rev_001");
+    expect(strip.cells[1].snapshotId).toBe("rev_002");
+    expect(strip.headSnapshotId).toBe("rev_002");
+    expect(strip.reviewedSnapshotId).toBe("rev_001");
+    expect(strip.defaultFloorSnapshotId).toBe("rev_001");
+  });
+
+  test("resolves floor snapshot file for selected revision", () => {
+    const rootDir = makeTempDir();
+    const project = "plannotator";
+
+    const snapshot = makeSnapshot({ snapshotId: "rev_floor" });
+    ensureSnapshotRecord({
+      project,
+      snapshot,
+      files: [
+        {
+          filePath: "src/review.ts",
+          patch: "diff --git a/src/review.ts b/src/review.ts\n",
+          patchHash: hashPatch("floor-patch"),
+          baselineNewContent: "content\n",
+        },
+      ],
+      rootDir,
+    });
+
+    const resolved = resolveFileRevisionSnapshot({
+      project,
+      snapshot,
+      filePath: "src/review.ts",
+      floorSnapshotId: "rev_floor",
+      rootDir,
+    });
+
+    expect(resolved).not.toBeNull();
+    expect(resolved?.file.patchHash).toBe(hashPatch("floor-patch"));
   });
 });
 

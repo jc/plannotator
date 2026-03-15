@@ -408,6 +408,82 @@ diffs-container {
   color: var(--primary-foreground);
 }
 
+.review-strip-all {
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-radius: 999px;
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 0.18rem 0.48rem;
+}
+
+.review-strip-all.selected {
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 0 1px oklch(from var(--primary) l c h / 0.4);
+}
+
+.review-strip-all.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.review-strip-cells {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.review-strip-cell {
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.review-strip-cell-dot {
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.review-strip-cell.head {
+  background: oklch(from var(--primary) l c h / 0.18);
+  border-color: oklch(from var(--primary) l c h / 0.45);
+}
+
+.review-strip-cell.head .review-strip-cell-dot {
+  background: var(--primary);
+}
+
+.review-strip-cell.reviewed {
+  border-color: oklch(from var(--success) l c h / 0.45);
+  background: oklch(from var(--success) l c h / 0.14);
+}
+
+.review-strip-cell.reviewed .review-strip-cell-dot {
+  background: var(--success);
+}
+
+.review-strip-cell.selected {
+  box-shadow: 0 0 0 2px oklch(from var(--warning) l c h / 0.55);
+}
+
+.review-strip-cell.ceiling.selected {
+  box-shadow: 0 0 0 2px oklch(from var(--primary) l c h / 0.6);
+}
+
+.review-strip-cell.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Annotation toolbar for code review */
 .review-toolbar {
   position: absolute;

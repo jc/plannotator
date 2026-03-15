@@ -13,6 +13,8 @@ import type {
   FileCheckpointAction,
   FileReviewState,
   FileReviewStatus,
+  FileRevisionCell,
+  FileRevisionStripResponse,
   ReviewSnapshotMeta,
   ReviewStateResponse,
 } from "@plannotator/shared/types";
@@ -24,14 +26,14 @@ export interface CurrentDiffFile {
   patchHash: string;
 }
 
-interface PersistedSnapshotFile {
+export interface PersistedSnapshotFile {
   filePath: string;
   oldPath?: string;
   patchHash: string;
   baselineNewContent: string | null;
 }
 
-interface PersistedSnapshot extends ReviewSnapshotMeta {
+export interface PersistedSnapshot extends ReviewSnapshotMeta {
   files: PersistedSnapshotFile[];
 }
 
@@ -216,6 +218,9 @@ export function applyCheckpointAction(input: {
   snapshot: ReviewSnapshotMeta;
   currentFile: CurrentDiffFile;
   baselineNewContent: string | null;
+  checkpointSnapshotId?: string;
+  checkpointPatchHash?: string;
+  checkpointBaselineNewContent?: string | null;
   rootDir?: string;
 }): FileReviewState {
   const {
@@ -227,6 +232,9 @@ export function applyCheckpointAction(input: {
     snapshot,
     currentFile,
     baselineNewContent,
+    checkpointSnapshotId,
+    checkpointPatchHash,
+    checkpointBaselineNewContent,
     rootDir,
   } = input;
 
@@ -265,9 +273,12 @@ export function applyCheckpointAction(input: {
       filePath,
       ...(oldPath ? { oldPath } : {}),
       status: "reviewed",
-      snapshotId: snapshot.snapshotId,
-      patchHash: currentFile.patchHash,
-      baselineNewContent,
+      snapshotId: checkpointSnapshotId || snapshot.snapshotId,
+      patchHash: checkpointPatchHash || currentFile.patchHash,
+      baselineNewContent:
+        checkpointBaselineNewContent !== undefined
+          ? checkpointBaselineNewContent
+          : baselineNewContent,
       updatedAt: new Date().toISOString(),
     };
 
@@ -301,8 +312,10 @@ export function buildDeltaPatch(input: {
 }): string {
   const { filePath, baselineNewContent, currentNewContent } = input;
 
-  const oldLabel = baselineNewContent === null ? "/dev/null" : `a/${filePath}`;
-  const newLabel = currentNewContent === null ? "/dev/null" : `b/${filePath}`;
+  const diffGitLeft = `a/${filePath}`;
+  const diffGitRight = `b/${filePath}`;
+  const oldLabel = baselineNewContent === null ? "/dev/null" : diffGitLeft;
+  const newLabel = currentNewContent === null ? "/dev/null" : diffGitRight;
   const oldText = baselineNewContent ?? "";
   const newText = currentNewContent ?? "";
 
@@ -332,11 +345,153 @@ export function buildDeltaPatch(input: {
     return line;
   });
 
-  return `diff --git ${oldLabel} ${newLabel}\n${normalizedLines.join("\n")}`;
+  return `diff --git ${diffGitLeft} ${diffGitRight}\n${normalizedLines.join("\n")}`;
 }
 
 export function listSnapshots(project: string, options: StorageOptions = {}): PersistedSnapshot[] {
   return Object.values(readSnapshotStore(project, options).snapshots);
+}
+
+export function buildNoChangesPatch(filePath: string, currentNewContent: string | null): string {
+  const diffGitLeft = `a/${filePath}`;
+  const diffGitRight = `b/${filePath}`;
+  const oldLabel = currentNewContent === null ? "/dev/null" : diffGitLeft;
+  const newLabel = currentNewContent === null ? "/dev/null" : diffGitRight;
+  return `diff --git ${diffGitLeft} ${diffGitRight}\n--- ${oldLabel}\n+++ ${newLabel}\n`;
+}
+
+export function getFileRevisionStrip(input: {
+  project: string;
+  reviewerId: string;
+  snapshot: ReviewSnapshotMeta;
+  filePath: string;
+  oldPath?: string;
+  rootDir?: string;
+}): FileRevisionStripResponse {
+  const { project, reviewerId, snapshot, filePath, oldPath, rootDir } = input;
+  const options = { rootDir };
+  const snapshotStore = readSnapshotStore(project, options);
+  const checkpointStore = readCheckpointStore(project, options);
+  const scope = getScope(snapshot);
+
+  const scopedSnapshots = Object.values(snapshotStore.snapshots)
+    .filter((candidate) => getScope(candidate) === scope)
+    .sort((a, b) => {
+      if (a.createdAt === b.createdAt) return a.snapshotId.localeCompare(b.snapshotId);
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+
+  const rawCells: Array<FileRevisionCell & { baselineNewContent: string | null }> = [];
+
+  for (const scopedSnapshot of scopedSnapshots) {
+    const file = findSnapshotFile(scopedSnapshot, filePath, oldPath);
+    if (!file) continue;
+
+    const previous = rawCells[rawCells.length - 1];
+    if (previous && previous.patchHash === file.patchHash) {
+      continue;
+    }
+
+    rawCells.push({
+      snapshotId: scopedSnapshot.snapshotId,
+      patchHash: file.patchHash,
+      createdAt: scopedSnapshot.createdAt,
+      order: rawCells.length,
+      baselineNewContent: file.baselineNewContent,
+    });
+  }
+
+  const currentIndex = rawCells.findIndex((cell) => cell.snapshotId === snapshot.snapshotId);
+  if (currentIndex >= 0 && currentIndex !== rawCells.length - 1) {
+    const [currentCell] = rawCells.splice(currentIndex, 1);
+    rawCells.push(currentCell);
+  }
+
+  const cells = rawCells.map(({ baselineNewContent: _ignored, ...cell }) => cell);
+  const headCell = rawCells[rawCells.length - 1];
+
+  const checkpoint = findCheckpoint(
+    checkpointStore,
+    reviewerId,
+    scope,
+    filePath,
+    oldPath
+  );
+
+  let reviewedSnapshotId: string | undefined;
+  if (checkpoint && checkpoint.status === "reviewed") {
+    const direct = rawCells.find((cell) => cell.snapshotId === checkpoint.snapshotId);
+    if (direct) {
+      reviewedSnapshotId = direct.snapshotId;
+    } else {
+      for (let i = rawCells.length - 1; i >= 0; i -= 1) {
+        if (rawCells[i].patchHash === checkpoint.patchHash) {
+          reviewedSnapshotId = rawCells[i].snapshotId;
+          break;
+        }
+      }
+    }
+  }
+
+  const defaultFloorSnapshotId = reviewedSnapshotId;
+
+  const headSnapshotId = headCell?.snapshotId || snapshot.snapshotId;
+
+  return {
+    snapshot,
+    filePath,
+    ...(oldPath ? { oldPath } : {}),
+    headSnapshotId,
+    ...(reviewedSnapshotId ? { reviewedSnapshotId } : {}),
+    ...(defaultFloorSnapshotId ? { defaultFloorSnapshotId } : {}),
+    defaultCeilingSnapshotId: headSnapshotId,
+    cells,
+  };
+}
+
+export function resolveFileRevisionSnapshot(input: {
+  project: string;
+  snapshot: ReviewSnapshotMeta;
+  filePath: string;
+  oldPath?: string;
+  floorSnapshotId: string;
+  rootDir?: string;
+}): { snapshot: PersistedSnapshot; file: PersistedSnapshotFile } | null {
+  const { project, snapshot, filePath, oldPath, floorSnapshotId, rootDir } = input;
+  const store = readSnapshotStore(project, { rootDir });
+  const scopedSnapshot = store.snapshots[floorSnapshotId];
+
+  if (!scopedSnapshot) {
+    return null;
+  }
+
+  if (getScope(scopedSnapshot) !== getScope(snapshot)) {
+    return null;
+  }
+
+  const file = findSnapshotFile(scopedSnapshot, filePath, oldPath);
+  if (!file) {
+    return null;
+  }
+
+  return { snapshot: scopedSnapshot, file };
+}
+
+function findSnapshotFile(
+  snapshot: PersistedSnapshot,
+  filePath: string,
+  oldPath?: string,
+): PersistedSnapshotFile | undefined {
+  if (oldPath) {
+    return snapshot.files.find(
+      (file) => file.filePath === filePath && file.oldPath === oldPath
+    );
+  }
+
+  return (
+    snapshot.files.find((file) => file.filePath === filePath) ||
+    snapshot.files.find((file) => file.filePath === filePath && !file.oldPath)
+  );
 }
 
 function deriveFileState(

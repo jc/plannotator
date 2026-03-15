@@ -16,12 +16,15 @@ import { getRepoInfo } from "./repo";
 import {
   applyCheckpointAction,
   buildDeltaPatch,
+  buildNoChangesPatch,
   buildSnapshotMeta,
   ensureSnapshotRecord,
   getCheckpointForFile,
   getDiffFileKey,
+  getFileRevisionStrip,
   getReviewState,
   parseDiffToCurrentFiles,
+  resolveFileRevisionSnapshot,
   type CurrentDiffFile,
 } from "./review-state";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
@@ -340,6 +343,38 @@ export async function startReviewServer(
             }
           }
 
+          // API: Read file-local revision strip history
+          if (url.pathname === "/api/review/file-history" && req.method === "GET") {
+            const reviewerId = url.searchParams.get("reviewerId")?.trim();
+            const filePath = url.searchParams.get("filePath")?.trim();
+            const oldPath = url.searchParams.get("oldPath")?.trim() || undefined;
+
+            if (!reviewerId || !filePath) {
+              return Response.json({ error: "Missing reviewerId or filePath" }, { status: 400 });
+            }
+
+            try {
+              const context = await getCurrentReviewContext();
+              const currentFile = findCurrentFile(context.files, filePath, oldPath);
+              if (!currentFile) {
+                return Response.json({ error: "File not found in current diff" }, { status: 404 });
+              }
+
+              const strip = getFileRevisionStrip({
+                project: projectName,
+                reviewerId,
+                snapshot: context.snapshot,
+                filePath: currentFile.filePath,
+                oldPath: currentFile.oldPath,
+              });
+
+              return Response.json(strip);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : "Failed to read file history";
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
           // API: Apply file checkpoint action (mark reviewed / skip / reset)
           if (url.pathname === "/api/review/checkpoint" && req.method === "POST") {
             try {
@@ -347,6 +382,7 @@ export async function startReviewServer(
                 reviewerId?: string;
                 filePath?: string;
                 oldPath?: string;
+                throughSnapshotId?: string;
                 action?: FileCheckpointAction;
               };
 
@@ -374,6 +410,28 @@ export async function startReviewServer(
               const baselineNewContent =
                 context.currentNewContentByKey.get(fileKey) ?? null;
 
+              let checkpointSnapshotId: string | undefined;
+              let checkpointPatchHash: string | undefined;
+              let checkpointBaselineNewContent: string | null | undefined;
+
+              if (action === "mark-reviewed" && body.throughSnapshotId) {
+                const floor = resolveFileRevisionSnapshot({
+                  project: projectName,
+                  snapshot: context.snapshot,
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  floorSnapshotId: body.throughSnapshotId,
+                });
+
+                if (!floor) {
+                  return Response.json({ error: "throughSnapshotId not found for file" }, { status: 400 });
+                }
+
+                checkpointSnapshotId = floor.snapshot.snapshotId;
+                checkpointPatchHash = floor.file.patchHash;
+                checkpointBaselineNewContent = floor.file.baselineNewContent;
+              }
+
               const fileState = applyCheckpointAction({
                 project: projectName,
                 reviewerId,
@@ -383,6 +441,9 @@ export async function startReviewServer(
                 snapshot: context.snapshot,
                 currentFile,
                 baselineNewContent,
+                checkpointSnapshotId,
+                checkpointPatchHash,
+                checkpointBaselineNewContent,
               });
 
               return Response.json({
@@ -403,18 +464,22 @@ export async function startReviewServer(
                 reviewerId?: string;
                 filePath?: string;
                 oldPath?: string;
+                floorSnapshotId?: string;
+                ceilingSnapshotId?: string;
                 viewMode?: FileViewMode;
               };
 
               const reviewerId = body.reviewerId?.trim();
               const filePath = body.filePath?.trim();
               const viewMode = body.viewMode;
+              const floorSnapshotId = body.floorSnapshotId?.trim();
+              const ceilingSnapshotId = body.ceilingSnapshotId?.trim();
 
-              if (!reviewerId || !filePath || !viewMode) {
-                return Response.json({ error: "Missing reviewerId, filePath, or viewMode" }, { status: 400 });
+              if (!reviewerId || !filePath) {
+                return Response.json({ error: "Missing reviewerId or filePath" }, { status: 400 });
               }
 
-              if (viewMode !== "full" && viewMode !== "delta") {
+              if (viewMode && viewMode !== "full" && viewMode !== "delta") {
                 return Response.json({ error: "Invalid viewMode" }, { status: 400 });
               }
 
@@ -435,15 +500,51 @@ export async function startReviewServer(
                 });
               }
 
-              const checkpoint = getCheckpointForFile(
-                projectName,
+              const strip = getFileRevisionStrip({
+                project: projectName,
                 reviewerId,
-                context.snapshot,
-                currentFile.filePath,
-                currentFile.oldPath,
-              );
+                snapshot: context.snapshot,
+                filePath: currentFile.filePath,
+                oldPath: currentFile.oldPath,
+              });
 
-              if (!checkpoint || checkpoint.status !== "reviewed") {
+              const headSnapshotId = strip.headSnapshotId;
+              let effectiveCeilingSnapshotId = ceilingSnapshotId || headSnapshotId;
+
+              let effectiveFloorSnapshotId = floorSnapshotId;
+
+              if (!effectiveFloorSnapshotId && !ceilingSnapshotId) {
+                const checkpoint = getCheckpointForFile(
+                  projectName,
+                  reviewerId,
+                  context.snapshot,
+                  currentFile.filePath,
+                  currentFile.oldPath,
+                );
+
+                if (checkpoint?.status === "reviewed") {
+                  effectiveFloorSnapshotId = checkpoint.snapshotId;
+                }
+              }
+
+              const orderMap = new Map(strip.cells.map((cell, index) => [cell.snapshotId, index]));
+
+              if (ceilingSnapshotId && !orderMap.has(effectiveCeilingSnapshotId)) {
+                return Response.json({ error: "ceilingSnapshotId not found for file" }, { status: 400 });
+              }
+
+              if (effectiveFloorSnapshotId && !orderMap.has(effectiveFloorSnapshotId)) {
+                return Response.json({ error: "floorSnapshotId not found for file" }, { status: 400 });
+              }
+
+              const ceilingOrder = orderMap.get(effectiveCeilingSnapshotId) ?? strip.cells.length - 1;
+              const floorOrder = effectiveFloorSnapshotId ? (orderMap.get(effectiveFloorSnapshotId) ?? -1) : -1;
+
+              if (effectiveFloorSnapshotId && floorOrder > ceilingOrder) {
+                return Response.json({ error: "floorSnapshotId cannot be newer than ceilingSnapshotId" }, { status: 400 });
+              }
+
+              if (!effectiveFloorSnapshotId && effectiveCeilingSnapshotId === headSnapshotId && !ceilingSnapshotId && !floorSnapshotId) {
                 return Response.json({
                   filePath: currentFile.filePath,
                   oldPath: currentFile.oldPath,
@@ -454,10 +555,22 @@ export async function startReviewServer(
               }
 
               const fileKey = getDiffFileKey(currentFile.filePath, currentFile.oldPath);
-              const currentNewContent = context.currentNewContentByKey.get(fileKey) ?? null;
-              const baselineNewContent = checkpoint.baselineNewContent ?? null;
+              const currentContents = await getFileContentsForDiff(
+                currentDiffType,
+                gitContext?.defaultBranch || "main",
+                currentFile.filePath,
+                currentFile.oldPath,
+              );
 
-              if (checkpoint.patchHash === currentFile.patchHash) {
+              const ceiling = resolveFileRevisionSnapshot({
+                project: projectName,
+                snapshot: context.snapshot,
+                filePath: currentFile.filePath,
+                oldPath: currentFile.oldPath,
+                floorSnapshotId: effectiveCeilingSnapshotId,
+              });
+
+              if (!ceiling) {
                 return Response.json({
                   filePath: currentFile.filePath,
                   oldPath: currentFile.oldPath,
@@ -467,10 +580,39 @@ export async function startReviewServer(
                 });
               }
 
+              const floor = effectiveFloorSnapshotId
+                ? resolveFileRevisionSnapshot({
+                    project: projectName,
+                    snapshot: context.snapshot,
+                    filePath: currentFile.filePath,
+                    oldPath: currentFile.oldPath,
+                    floorSnapshotId: effectiveFloorSnapshotId,
+                  })
+                : null;
+
+              if (effectiveFloorSnapshotId && !floor) {
+                return Response.json({ error: "floorSnapshotId not found for file" }, { status: 400 });
+              }
+
+              const floorContent = floor ? floor.file.baselineNewContent : currentContents.oldContent;
+              const ceilingContent = ceiling.file.baselineNewContent;
+
+              if (floorContent === ceilingContent) {
+                return Response.json({
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  viewMode: "delta" as const,
+                  patch: buildNoChangesPatch(currentFile.filePath, ceilingContent),
+                  snapshotId: context.snapshot.snapshotId,
+                  floorSnapshotId: effectiveFloorSnapshotId,
+                  ceilingSnapshotId: effectiveCeilingSnapshotId,
+                });
+              }
+
               const deltaPatch = buildDeltaPatch({
                 filePath: currentFile.filePath,
-                baselineNewContent,
-                currentNewContent,
+                baselineNewContent: floorContent,
+                currentNewContent: ceilingContent,
               });
 
               if (!deltaPatch.includes("@@")) {
@@ -489,6 +631,8 @@ export async function startReviewServer(
                 viewMode: "delta" as const,
                 patch: deltaPatch,
                 snapshotId: context.snapshot.snapshotId,
+                floorSnapshotId: effectiveFloorSnapshotId,
+                ceilingSnapshotId: effectiveCeilingSnapshotId,
               });
             } catch (err) {
               const message =

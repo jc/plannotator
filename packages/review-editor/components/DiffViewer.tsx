@@ -9,7 +9,7 @@ import { FileHeader } from './FileHeader';
 import { InlineAnnotation } from './InlineAnnotation';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { SuggestionModal } from './SuggestionModal';
-import type { FileCheckpointAction, FileReviewStatus, FileViewMode } from '@plannotator/shared/types';
+import type { FileCheckpointAction, FileRevisionStripResponse, FileReviewStatus, FileViewMode } from '@plannotator/shared/types';
 
 interface DiffViewerProps {
   patch: string;
@@ -27,6 +27,11 @@ interface DiffViewerProps {
   reviewStatus: FileReviewStatus;
   viewMode: FileViewMode;
   deltaAvailable: boolean;
+  revisionStrip?: FileRevisionStripResponse;
+  selectedFloorSnapshotId?: string | null;
+  selectedCeilingSnapshotId?: string | null;
+  onSelectFloorSnapshot?: (snapshotId: string | null) => void;
+  onSelectCeilingSnapshot?: (snapshotId: string) => void;
   onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
@@ -54,6 +59,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   reviewStatus,
   viewMode,
   deltaAvailable,
+  revisionStrip,
+  selectedFloorSnapshotId,
+  selectedCeilingSnapshotId,
+  onSelectFloorSnapshot,
+  onSelectCeilingSnapshot,
   onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
@@ -207,6 +217,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         reviewStatus={reviewStatus}
         viewMode={viewMode}
         deltaAvailable={deltaAvailable}
+        revisionStrip={revisionStrip}
+        selectedFloorSnapshotId={selectedFloorSnapshotId}
+        selectedCeilingSnapshotId={selectedCeilingSnapshotId}
+        onSelectFloorSnapshot={onSelectFloorSnapshot}
+        onSelectCeilingSnapshot={onSelectCeilingSnapshot}
         onSetViewMode={onSetViewMode}
         onCheckpointAction={onCheckpointAction}
         isUpdatingReviewState={isUpdatingReviewState}

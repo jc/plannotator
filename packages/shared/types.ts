@@ -55,3 +55,21 @@ export interface ReviewStateResponse {
   snapshot: ReviewSnapshotMeta;
   files: FileReviewState[];
 }
+
+export interface FileRevisionCell {
+  snapshotId: string;
+  patchHash: string;
+  createdAt: string;
+  order: number;
+}
+
+export interface FileRevisionStripResponse {
+  snapshot: ReviewSnapshotMeta;
+  filePath: string;
+  oldPath?: string;
+  headSnapshotId: string;
+  reviewedSnapshotId?: string;
+  defaultFloorSnapshotId?: string;
+  defaultCeilingSnapshotId?: string;
+  cells: FileRevisionCell[];
+}

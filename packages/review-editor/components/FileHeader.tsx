@@ -1,5 +1,10 @@
 import React, { useState } from 'react';
-import type { FileCheckpointAction, FileReviewStatus, FileViewMode } from '@plannotator/shared/types';
+import type {
+  FileCheckpointAction,
+  FileRevisionStripResponse,
+  FileReviewStatus,
+  FileViewMode,
+} from '@plannotator/shared/types';
 
 interface FileHeaderProps {
   filePath: string;
@@ -7,6 +12,11 @@ interface FileHeaderProps {
   reviewStatus: FileReviewStatus;
   viewMode: FileViewMode;
   deltaAvailable: boolean;
+  revisionStrip?: FileRevisionStripResponse;
+  selectedFloorSnapshotId?: string | null;
+  selectedCeilingSnapshotId?: string | null;
+  onSelectFloorSnapshot?: (snapshotId: string | null) => void;
+  onSelectCeilingSnapshot?: (snapshotId: string) => void;
   onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
@@ -24,13 +34,18 @@ const STATUS_LABEL: Record<FileReviewStatus, string> = {
   skipped: 'Skipped',
 };
 
-/** Sticky file header with file path, review controls, Git Add, and Copy Diff button */
+/** Sticky file header with file path, review controls, strip, Git Add, and Copy Diff button */
 export const FileHeader: React.FC<FileHeaderProps> = ({
   filePath,
   patch,
   reviewStatus,
   viewMode,
   deltaAvailable,
+  revisionStrip,
+  selectedFloorSnapshotId = null,
+  selectedCeilingSnapshotId = null,
+  onSelectFloorSnapshot,
+  onSelectCeilingSnapshot,
   onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
@@ -42,10 +57,88 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
 
+  const reviewedSnapshotId = revisionStrip?.reviewedSnapshotId;
+  const headSnapshotId = revisionStrip?.headSnapshotId;
+  const canReviewFromCheckpoint = !!reviewedSnapshotId;
+
   return (
     <div className="sticky top-0 z-10 px-4 py-2 bg-card/95 backdrop-blur border-b border-border flex items-center justify-between gap-4">
-      <div className="min-w-0">
+      <div className="min-w-0 space-y-1">
         <div className="font-mono text-sm text-foreground truncate">{filePath}</div>
+
+        {revisionStrip && revisionStrip.cells.length > 0 && onSelectFloorSnapshot && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 w-8">From</span>
+
+              <button
+                onClick={() => onSelectFloorSnapshot(null)}
+                disabled={isUpdatingReviewState}
+                className={`review-strip-all ${selectedFloorSnapshotId ? '' : 'selected'} ${isUpdatingReviewState ? 'disabled' : ''}`}
+                title="Use base/full floor"
+              >
+                Base
+              </button>
+
+              <div className="review-strip-cells">
+                {revisionStrip.cells.map((cell) => {
+                  const isSelected = selectedFloorSnapshotId === cell.snapshotId;
+                  const isReviewed = cell.snapshotId === reviewedSnapshotId;
+
+                  return (
+                    <button
+                      key={`floor-${cell.snapshotId}`}
+                      onClick={() => onSelectFloorSnapshot(cell.snapshotId)}
+                      disabled={isUpdatingReviewState}
+                      className={`review-strip-cell ${
+                        isSelected ? 'selected' : ''
+                      } ${
+                        isReviewed ? 'reviewed' : ''
+                      } ${
+                        isUpdatingReviewState ? 'disabled' : ''
+                      }`}
+                      title={`Floor r${cell.order + 1} · ${new Date(cell.createdAt).toLocaleString()}`}
+                    >
+                      <span className="review-strip-cell-dot" />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 w-8">To</span>
+
+              <div className="review-strip-cells">
+                {revisionStrip.cells.map((cell) => {
+                  const isSelected = selectedCeilingSnapshotId === cell.snapshotId;
+                  const isHead = cell.snapshotId === headSnapshotId;
+                  const isReviewed = cell.snapshotId === reviewedSnapshotId;
+
+                  return (
+                    <button
+                      key={`ceiling-${cell.snapshotId}`}
+                      onClick={() => onSelectCeilingSnapshot?.(cell.snapshotId)}
+                      disabled={isUpdatingReviewState || !onSelectCeilingSnapshot}
+                      className={`review-strip-cell ceiling ${
+                        isSelected ? 'selected' : ''
+                      } ${
+                        isHead ? 'head' : ''
+                      } ${
+                        isReviewed ? 'reviewed' : ''
+                      } ${
+                        isUpdatingReviewState ? 'disabled' : ''
+                      }`}
+                      title={`Ceiling r${cell.order + 1} · ${new Date(cell.createdAt).toLocaleString()}`}
+                    >
+                      <span className="review-strip-cell-dot" />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -57,13 +150,13 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
           <div className="flex items-center gap-1 bg-muted rounded-md p-0.5">
             <button
               onClick={() => onSetViewMode('delta')}
-              disabled={!deltaAvailable || isUpdatingReviewState}
+              disabled={!deltaAvailable || !canReviewFromCheckpoint || isUpdatingReviewState}
               className={`px-2 py-1 text-xs rounded transition-colors ${
                 viewMode === 'delta'
                   ? 'bg-background text-foreground shadow-sm'
                   : 'text-muted-foreground hover:text-foreground'
-              } ${(!deltaAvailable || isUpdatingReviewState) ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title={deltaAvailable ? 'Show only changes since your last reviewed checkpoint' : 'Delta view is available after you review and the file changes again'}
+              } ${(!deltaAvailable || !canReviewFromCheckpoint || isUpdatingReviewState) ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={canReviewFromCheckpoint ? 'Jump to reviewed checkpoint as the diff floor' : 'Mark the file reviewed first to use checkpoint-based diff floors'}
             >
               Review new changes
             </button>
@@ -92,9 +185,9 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
                   ? 'opacity-50 cursor-not-allowed text-muted-foreground'
                   : 'bg-success/15 text-success hover:bg-success/25'
               }`}
-              title="Mark reviewed at this revision"
+              title="Persist reviewed checkpoint through selected revision"
             >
-              Mark reviewed
+              Mark reviewed through here
             </button>
             <button
               onClick={() => onCheckpointAction('skip')}
@@ -116,9 +209,9 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
                   ? 'opacity-50 cursor-not-allowed text-muted-foreground'
                   : 'text-muted-foreground hover:text-foreground hover:bg-muted'
               }`}
-              title="Reset review checkpoint for this file"
+              title="Clear reviewed checkpoint for this file"
             >
-              Reset
+              Clear reviewed state
             </button>
           </>
         )}
