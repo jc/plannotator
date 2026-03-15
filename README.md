@@ -38,6 +38,8 @@ Interactive Plan & Code Review for AI Coding Agents. Mark up and refine your pla
 <tr><td><strong>Annotate Any File</strong></td><td><code>/plannotator-annotate</code></td><td>Annotate any markdown file and send feedback to your agent</td></tr>
 </table>
 
+Code review now includes per-file checkpoints: once you mark a file reviewed, later sessions can default to a **delta** view that shows only changes introduced after your last reviewed revision. This is a linear, snapshot/content-based workflow (no rename/remap semantics yet).
+
 #### Sharing Plans
 
 Plannotator lets you privately share plans, annotations, and feedback with colleagues. For example, a colleague can annotate a shared plan, and you can import their feedback to send directly back to the coding agent.

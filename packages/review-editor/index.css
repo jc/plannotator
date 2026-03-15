@@ -359,6 +359,55 @@ diffs-container {
   background: var(--primary);
 }
 
+.file-status-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.file-status-chip.small {
+  padding: 0.14rem 0.4rem;
+  font-size: 0.56rem;
+}
+
+.file-status-chip.unreviewed {
+  background: var(--muted);
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+
+.file-status-chip.reviewed {
+  background: oklch(from var(--success) l c h / 0.15);
+  border-color: oklch(from var(--success) l c h / 0.35);
+  color: var(--success);
+}
+
+.file-status-chip.needs-rereview {
+  background: oklch(from var(--warning) l c h / 0.16);
+  border-color: oklch(from var(--warning) l c h / 0.35);
+  color: var(--warning);
+}
+
+.file-status-chip.skipped {
+  background: oklch(from var(--secondary) l c h / 0.18);
+  border-color: oklch(from var(--secondary) l c h / 0.32);
+  color: var(--secondary);
+}
+
+.file-tree-item.active .file-status-chip {
+  background: oklch(from var(--primary-foreground) l c h / 0.18);
+  border-color: oklch(from var(--primary-foreground) l c h / 0.34);
+  color: var(--primary-foreground);
+}
+
 /* Annotation toolbar for code review */
 .review-toolbar {
   position: absolute;

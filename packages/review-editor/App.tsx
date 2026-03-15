@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { ThemeProvider, useTheme } from '@plannotator/ui/components/ThemeProvider';
+import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { ModeToggle } from '@plannotator/ui/components/ModeToggle';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Settings } from '@plannotator/ui/components/Settings';
@@ -19,7 +19,13 @@ import { DiffViewer } from './components/DiffViewer';
 import { ReviewPanel } from './components/ReviewPanel';
 import { FileTree } from './components/FileTree';
 import { DEMO_DIFF } from './demoData';
-import type { DiffOption, WorktreeInfo, GitContext } from '@plannotator/shared/types';
+import type {
+  FileCheckpointAction,
+  FileReviewState,
+  FileViewMode,
+  GitContext,
+  ReviewStateResponse,
+} from '@plannotator/shared/types';
 
 declare const __APP_VERSION__: string;
 
@@ -75,6 +81,8 @@ function parseDiffToFiles(rawPatch: string): DiffFile[] {
 }
 
 // Generate unique ID
+const getFileKey = (path: string, oldPath?: string) => `${oldPath || ''}::${path}`;
+
 function generateId(): string {
   return Math.random().toString(36).substring(2, 9);
 }
@@ -137,8 +145,11 @@ const ReviewApp: React.FC = () => {
   });
   const [isPanelOpen, setIsPanelOpen] = useState(true);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
-  const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
-  const [hideViewedFiles, setHideViewedFiles] = useState(false);
+  const [reviewSnapshotId, setReviewSnapshotId] = useState<string | null>(null);
+  const [reviewStates, setReviewStates] = useState<Record<string, FileReviewState>>({});
+  const [fileViewModes, setFileViewModes] = useState<Record<string, FileViewMode>>({});
+  const [filePatchOverrides, setFilePatchOverrides] = useState<Record<string, string>>({});
+  const [isUpdatingReviewState, setIsUpdatingReviewState] = useState(false);
   const [origin, setOrigin] = useState<'opencode' | 'claude-code' | 'pi' | null>(null);
   const [diffType, setDiffType] = useState<string>('uncommitted');
   const [gitContext, setGitContext] = useState<GitContext | null>(null);
@@ -204,6 +215,33 @@ const ReviewApp: React.FC = () => {
     return annotations.filter(a => a.filePath === activeFile.path);
   }, [annotations, files, activeFileIndex]);
 
+  const refreshReviewStateForFiles = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/review/state?reviewerId=${encodeURIComponent(identity)}`);
+      if (!res.ok) throw new Error('Review state unavailable');
+
+      const data = await res.json() as ReviewStateResponse;
+      const stateMap: Record<string, FileReviewState> = {};
+      const modeMap: Record<string, FileViewMode> = {};
+
+      for (const file of data.files) {
+        const key = getFileKey(file.filePath, file.oldPath);
+        stateMap[key] = file;
+        modeMap[key] = file.status === 'needs-rereview' && file.deltaAvailable ? 'delta' : 'full';
+      }
+
+      setReviewSnapshotId(data.snapshot.snapshotId);
+      setReviewStates(stateMap);
+      setFileViewModes(modeMap);
+      setFilePatchOverrides({});
+    } catch {
+      setReviewSnapshotId(null);
+      setReviewStates({});
+      setFileViewModes({});
+      setFilePatchOverrides({});
+    }
+  }, [identity]);
+
   // Load diff content - try API first, fall back to demo
   useEffect(() => {
     fetch('/api/diff')
@@ -211,7 +249,7 @@ const ReviewApp: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: {
+      .then(async (data: {
         rawPatch: string;
         gitRef: string;
         origin?: 'opencode' | 'claude-code' | 'pi';
@@ -238,6 +276,7 @@ const ReviewApp: React.FC = () => {
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         if (data.repoInfo) setRepoInfo(data.repoInfo);
         if (data.error) setDiffError(data.error);
+        await refreshReviewStateForFiles();
       })
       .catch(() => {
         // Not in API mode - use demo content
@@ -248,9 +287,13 @@ const ReviewApp: React.FC = () => {
           gitRef: 'demo',
         });
         setFiles(demoFiles);
+        setReviewSnapshotId(null);
+        setReviewStates({});
+        setFileViewModes({});
+        setFilePatchOverrides({});
       })
       .finally(() => setIsLoading(false));
-  }, []);
+  }, [refreshReviewStateForFiles]);
 
   // Handle diff style change
   const handleDiffStyleChange = useCallback((style: 'split' | 'unified') => {
@@ -334,18 +377,6 @@ const ReviewApp: React.FC = () => {
     }
   }, [activeFileIndex]);
 
-  const handleToggleViewed = useCallback((filePath: string) => {
-    setViewedFiles(prev => {
-      const next = new Set(prev);
-      if (next.has(filePath)) {
-        next.delete(filePath);
-      } else {
-        next.add(filePath);
-      }
-      return next;
-    });
-  }, []);
-
   // Derive worktree path and base diff type from the composite diffType string
   const { activeWorktreePath, activeDiffBase } = useMemo(() => {
     if (diffType.startsWith('worktree:')) {
@@ -363,13 +394,8 @@ const ReviewApp: React.FC = () => {
   }, [diffType]);
 
   // Git add/staging logic
-  const handleFileViewedFromStage = useCallback(
-    (path: string) => setViewedFiles(prev => new Set(prev).add(path)),
-    [],
-  );
   const { stagedFiles, stagingFile, canStageFiles, stageFile, resetStagedFiles, stageError } = useGitAdd({
     activeDiffBase,
-    onFileViewed: handleFileViewedFromStage,
   });
 
   // Shared helper: fetch a diff switch and update state
@@ -391,19 +417,21 @@ const ReviewApp: React.FC = () => {
         error?: string;
       };
 
-      setFiles(parseDiffToFiles(data.rawPatch));
+      const switchedFiles = parseDiffToFiles(data.rawPatch);
+      setFiles(switchedFiles);
       setDiffType(data.diffType);
       setActiveFileIndex(0);
       setPendingSelection(null);
       setDiffError(data.error || null);
       resetStagedFiles();
+      await refreshReviewStateForFiles();
     } catch (err) {
       console.error('Failed to switch diff:', err);
       setDiffError(err instanceof Error ? err.message : 'Failed to switch diff');
     } finally {
       setIsLoadingDiff(false);
     }
-  }, [resetStagedFiles]);
+  }, [resetStagedFiles, refreshReviewStateForFiles]);
 
   // Switch diff type (uncommitted, last-commit, branch) — composes worktree prefix if active
   const handleDiffSwitch = useCallback(async (baseDiffType: string) => {
@@ -422,6 +450,110 @@ const ReviewApp: React.FC = () => {
       : 'uncommitted';
     await fetchDiffSwitch(fullDiffType);
   }, [activeWorktreePath, fetchDiffSwitch]);
+
+  const getReviewStateForFile = useCallback((file: DiffFile | undefined) => {
+    if (!file) return undefined;
+    const key = getFileKey(file.path, file.oldPath);
+    return reviewStates[key] || reviewStates[getFileKey(file.path)];
+  }, [reviewStates]);
+
+  const fetchFilePatchForMode = useCallback(async (file: DiffFile, requestedMode: FileViewMode) => {
+    if (!origin) {
+      setFilePatchOverrides(prev => {
+        const key = getFileKey(file.path, file.oldPath);
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/review/file-view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reviewerId: identity,
+          filePath: file.path,
+          oldPath: file.oldPath,
+          viewMode: requestedMode,
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to load file view');
+
+      const data = await res.json() as {
+        patch: string;
+        viewMode: FileViewMode;
+      };
+
+      const key = getFileKey(file.path, file.oldPath);
+      setFileViewModes(prev => ({ ...prev, [key]: data.viewMode }));
+      setFilePatchOverrides(prev => {
+        const next = { ...prev };
+        if (data.viewMode === 'delta') {
+          next[key] = data.patch;
+        } else {
+          delete next[key];
+        }
+        return next;
+      });
+    } catch {
+      const key = getFileKey(file.path, file.oldPath);
+      setFileViewModes(prev => ({ ...prev, [key]: 'full' }));
+      setFilePatchOverrides(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  }, [identity, origin]);
+
+  const handleSetFileViewMode = useCallback(async (file: DiffFile, mode: FileViewMode) => {
+    const key = getFileKey(file.path, file.oldPath);
+
+    if (mode === 'full') {
+      setFileViewModes(prev => ({ ...prev, [key]: 'full' }));
+      setFilePatchOverrides(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+
+    const reviewState = getReviewStateForFile(file);
+    if (!reviewState?.deltaAvailable) return;
+    await fetchFilePatchForMode(file, 'delta');
+  }, [fetchFilePatchForMode, getReviewStateForFile]);
+
+  const handleCheckpointAction = useCallback(async (file: DiffFile, action: FileCheckpointAction) => {
+    if (!origin) return;
+
+    setIsUpdatingReviewState(true);
+    try {
+      const res = await fetch('/api/review/checkpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reviewerId: identity,
+          filePath: file.path,
+          oldPath: file.oldPath,
+          action,
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to update checkpoint');
+
+      await refreshReviewStateForFiles();
+    } catch (err) {
+      console.error('Failed to update review checkpoint:', err);
+      setCopyFeedback('Failed to update review status');
+      setTimeout(() => setCopyFeedback(null), 2000);
+    } finally {
+      setIsUpdatingReviewState(false);
+    }
+  }, [files, identity, origin, refreshReviewStateForFiles]);
 
   // Select annotation - switches file if needed and scrolls to it
   const handleSelectAnnotation = useCallback((id: string | null) => {
@@ -445,6 +577,29 @@ const ReviewApp: React.FC = () => {
 
     setSelectedAnnotationId(id);
   }, [annotations, files, activeFileIndex, handleFileSwitch]);
+
+  // Keep active file patch synced to selected view mode.
+  useEffect(() => {
+    const active = files[activeFileIndex];
+    if (!active) return;
+
+    const key = getFileKey(active.path, active.oldPath);
+    const mode = fileViewModes[key] || 'full';
+
+    if (mode === 'delta') {
+      if (!filePatchOverrides[key]) {
+        fetchFilePatchForMode(active, 'delta');
+      }
+      return;
+    }
+
+    setFilePatchOverrides(prev => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, [activeFileIndex, files, fileViewModes, fetchFilePatchForMode, filePatchOverrides, reviewSnapshotId]);
 
   // Copy raw diff to clipboard
   const handleCopyDiff = useCallback(async () => {
@@ -479,6 +634,13 @@ const ReviewApp: React.FC = () => {
   }, [annotations, files]);
 
   const activeFile = files[activeFileIndex];
+  const activeFileKey = activeFile ? getFileKey(activeFile.path, activeFile.oldPath) : null;
+  const activeFileReviewState = activeFile ? getReviewStateForFile(activeFile) : undefined;
+  const activeFileViewMode: FileViewMode = activeFileKey ? (fileViewModes[activeFileKey] || 'full') : 'full';
+  const activePatch = activeFileKey && filePatchOverrides[activeFileKey]
+    ? filePatchOverrides[activeFileKey]
+    : activeFile?.patch;
+
   const feedbackMarkdown = useMemo(() => {
     let output = exportReviewFeedback(annotations, files);
     if (editorAnnotations.length > 0) {
@@ -808,10 +970,7 @@ const ReviewApp: React.FC = () => {
                 activeFileIndex={activeFileIndex}
                 onSelectFile={handleFileSwitch}
                 annotations={annotations}
-                viewedFiles={viewedFiles}
-                onToggleViewed={handleToggleViewed}
-                hideViewedFiles={hideViewedFiles}
-                onToggleHideViewed={() => setHideViewedFiles(prev => !prev)}
+                reviewStates={reviewStates}
                 enableKeyboardNav={!showExportModal}
                 diffOptions={gitContext?.diffOptions}
                 activeDiffType={activeDiffBase}
@@ -842,7 +1001,7 @@ const ReviewApp: React.FC = () => {
             />
             {activeFile ? (
               <DiffViewer
-                patch={activeFile.patch}
+                patch={activePatch || activeFile.patch}
                 filePath={activeFile.path}
                 oldPath={activeFile.oldPath}
                 diffStyle={diffStyle}
@@ -854,8 +1013,13 @@ const ReviewApp: React.FC = () => {
                 onEditAnnotation={handleEditAnnotation}
                 onSelectAnnotation={handleSelectAnnotation}
                 onDeleteAnnotation={handleDeleteAnnotation}
-                isViewed={viewedFiles.has(activeFile.path)}
-                onToggleViewed={() => handleToggleViewed(activeFile.path)}
+                reviewStatus={activeFileReviewState?.status || 'unreviewed'}
+                viewMode={activeFileViewMode}
+                deltaAvailable={activeFileReviewState?.deltaAvailable || false}
+                onSetViewMode={origin ? (mode) => handleSetFileViewMode(activeFile, mode) : undefined}
+                onCheckpointAction={origin ? (action) => handleCheckpointAction(activeFile, action) : undefined}
+                isUpdatingReviewState={isUpdatingReviewState}
+                skipContextFetch={activeFileViewMode === 'delta'}
                 isStaged={stagedFiles.has(activeFile.path)}
                 isStaging={stagingFile === activeFile.path}
                 onStage={() => stageFile(activeFile.path)}

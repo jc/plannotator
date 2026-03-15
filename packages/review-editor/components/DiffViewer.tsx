@@ -9,6 +9,7 @@ import { FileHeader } from './FileHeader';
 import { InlineAnnotation } from './InlineAnnotation';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { SuggestionModal } from './SuggestionModal';
+import type { FileCheckpointAction, FileReviewStatus, FileViewMode } from '@plannotator/shared/types';
 
 interface DiffViewerProps {
   patch: string;
@@ -23,8 +24,13 @@ interface DiffViewerProps {
   onEditAnnotation: (id: string, text?: string, suggestedCode?: string, originalCode?: string) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
-  isViewed?: boolean;
-  onToggleViewed?: () => void;
+  reviewStatus: FileReviewStatus;
+  viewMode: FileViewMode;
+  deltaAvailable: boolean;
+  onSetViewMode?: (mode: FileViewMode) => void;
+  onCheckpointAction?: (action: FileCheckpointAction) => void;
+  isUpdatingReviewState?: boolean;
+  skipContextFetch?: boolean;
   isStaged?: boolean;
   isStaging?: boolean;
   onStage?: () => void;
@@ -45,8 +51,13 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onEditAnnotation,
   onSelectAnnotation,
   onDeleteAnnotation,
-  isViewed = false,
-  onToggleViewed,
+  reviewStatus,
+  viewMode,
+  deltaAvailable,
+  onSetViewMode,
+  onCheckpointAction,
+  isUpdatingReviewState = false,
+  skipContextFetch = false,
   isStaged = false,
   isStaging = false,
   onStage,
@@ -67,6 +78,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   useEffect(() => {
     const controller = new AbortController();
     setFileContents(null);
+
+    if (skipContextFetch) {
+      return () => controller.abort();
+    }
+
     const params = new URLSearchParams({ path: filePath });
     if (oldPath) params.set('oldPath', oldPath);
     fetch(`/api/file-content?${params}`, { signal: controller.signal })
@@ -78,7 +94,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       })
       .catch(() => {}); // Silent fallback — no expansion in demo mode
     return () => controller.abort();
-  }, [filePath, oldPath]);
+  }, [filePath, oldPath, skipContextFetch]);
 
   // Re-parse the patch with full file contents so hunk indices are computed
   // against the complete file (isPartial: false), enabling expansion.
@@ -188,8 +204,12 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
       <FileHeader
         filePath={filePath}
         patch={patch}
-        isViewed={isViewed}
-        onToggleViewed={onToggleViewed}
+        reviewStatus={reviewStatus}
+        viewMode={viewMode}
+        deltaAvailable={deltaAvailable}
+        onSetViewMode={onSetViewMode}
+        onCheckpointAction={onCheckpointAction}
+        isUpdatingReviewState={isUpdatingReviewState}
         isStaged={isStaged}
         isStaging={isStaging}
         onStage={onStage}

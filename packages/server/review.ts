@@ -11,10 +11,23 @@
 
 import { isRemoteSession, getServerPort } from "./remote";
 import { type DiffType, type GitContext, runGitDiff, getFileContentsForDiff, gitAddFile, gitResetFile, parseWorktreeDiffType, validateFilePath } from "./git";
+import { detectProjectName } from "./project";
 import { getRepoInfo } from "./repo";
+import {
+  applyCheckpointAction,
+  buildDeltaPatch,
+  buildSnapshotMeta,
+  ensureSnapshotRecord,
+  getCheckpointForFile,
+  getDiffFileKey,
+  getReviewState,
+  parseDiffToCurrentFiles,
+  type CurrentDiffFile,
+} from "./review-state";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
+import type { FileCheckpointAction, FileViewMode, ReviewSnapshotMeta } from "@plannotator/shared/types";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -98,6 +111,81 @@ export async function startReviewServer(
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
+  const detectedProject = await detectProjectName();
+  const projectName = detectedProject || repoInfo?.display || "default";
+
+  type ReviewContext = {
+    snapshot: ReviewSnapshotMeta;
+    files: CurrentDiffFile[];
+    currentNewContentByKey: Map<string, string | null>;
+  };
+
+  let currentReviewContext: ReviewContext | null = null;
+
+  const invalidateReviewContext = () => {
+    currentReviewContext = null;
+  };
+
+  const getCurrentReviewContext = async (): Promise<ReviewContext> => {
+    if (currentReviewContext) {
+      return currentReviewContext;
+    }
+
+    const files = parseDiffToCurrentFiles(currentPatch);
+    const snapshot = buildSnapshotMeta({
+      rawPatch: currentPatch,
+      diffType: currentDiffType,
+      gitRef: currentGitRef,
+    });
+    const defaultBranch = gitContext?.defaultBranch || "main";
+
+    const fileContentPairs = await Promise.all(
+      files.map(async (file) => {
+        const contents = await getFileContentsForDiff(
+          currentDiffType,
+          defaultBranch,
+          file.filePath,
+          file.oldPath,
+        );
+
+        return [
+          getDiffFileKey(file.filePath, file.oldPath),
+          contents.newContent,
+        ] as const;
+      })
+    );
+
+    const currentNewContentByKey = new Map<string, string | null>(fileContentPairs);
+
+    ensureSnapshotRecord({
+      project: projectName,
+      snapshot,
+      files: files.map((file) => ({
+        ...file,
+        baselineNewContent:
+          currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null,
+      })),
+    });
+
+    currentReviewContext = {
+      snapshot,
+      files,
+      currentNewContentByKey,
+    };
+
+    return currentReviewContext;
+  };
+
+  const findCurrentFile = (
+    files: CurrentDiffFile[],
+    filePath: string,
+    oldPath?: string
+  ): CurrentDiffFile | undefined => {
+    if (oldPath) {
+      return files.find((file) => file.filePath === filePath && file.oldPath === oldPath);
+    }
+    return files.find((file) => file.filePath === filePath);
+  };
 
   // Decision promise
   let resolveDecision: (result: {
@@ -162,6 +250,7 @@ export async function startReviewServer(
               currentGitRef = result.label;
               currentDiffType = newDiffType;
               currentError = result.error;
+              invalidateReviewContext();
 
               return Response.json({
                 rawPatch: currentPatch,
@@ -225,6 +314,185 @@ export async function startReviewServer(
               return Response.json({ ok: true });
             } catch (err) {
               const message = err instanceof Error ? err.message : "Failed to git add";
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
+          // API: Read review checkpoint state for current snapshot
+          if (url.pathname === "/api/review/state" && req.method === "GET") {
+            const reviewerId = url.searchParams.get("reviewerId")?.trim();
+            if (!reviewerId) {
+              return Response.json({ error: "Missing reviewerId" }, { status: 400 });
+            }
+
+            try {
+              const context = await getCurrentReviewContext();
+              const state = getReviewState(
+                projectName,
+                reviewerId,
+                context.snapshot,
+                context.files
+              );
+              return Response.json(state);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : "Failed to read review state";
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
+          // API: Apply file checkpoint action (mark reviewed / skip / reset)
+          if (url.pathname === "/api/review/checkpoint" && req.method === "POST") {
+            try {
+              const body = (await req.json()) as {
+                reviewerId?: string;
+                filePath?: string;
+                oldPath?: string;
+                action?: FileCheckpointAction;
+              };
+
+              const reviewerId = body.reviewerId?.trim();
+              const filePath = body.filePath?.trim();
+              const action = body.action;
+
+              if (!reviewerId || !filePath || !action) {
+                return Response.json({ error: "Missing reviewerId, filePath, or action" }, { status: 400 });
+              }
+
+              const validActions: FileCheckpointAction[] = ["mark-reviewed", "skip", "reset"];
+              if (!validActions.includes(action)) {
+                return Response.json({ error: "Invalid action" }, { status: 400 });
+              }
+
+              const context = await getCurrentReviewContext();
+              const currentFile = findCurrentFile(context.files, filePath, body.oldPath);
+
+              if (!currentFile) {
+                return Response.json({ error: "File not found in current diff" }, { status: 404 });
+              }
+
+              const fileKey = getDiffFileKey(currentFile.filePath, currentFile.oldPath);
+              const baselineNewContent =
+                context.currentNewContentByKey.get(fileKey) ?? null;
+
+              const fileState = applyCheckpointAction({
+                project: projectName,
+                reviewerId,
+                filePath: currentFile.filePath,
+                oldPath: currentFile.oldPath,
+                action,
+                snapshot: context.snapshot,
+                currentFile,
+                baselineNewContent,
+              });
+
+              return Response.json({
+                snapshot: context.snapshot,
+                file: fileState,
+              });
+            } catch (err) {
+              const message =
+                err instanceof Error ? err.message : "Failed to update review checkpoint";
+              return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
+          // API: Get patch text for a file in full or delta mode
+          if (url.pathname === "/api/review/file-view" && req.method === "POST") {
+            try {
+              const body = (await req.json()) as {
+                reviewerId?: string;
+                filePath?: string;
+                oldPath?: string;
+                viewMode?: FileViewMode;
+              };
+
+              const reviewerId = body.reviewerId?.trim();
+              const filePath = body.filePath?.trim();
+              const viewMode = body.viewMode;
+
+              if (!reviewerId || !filePath || !viewMode) {
+                return Response.json({ error: "Missing reviewerId, filePath, or viewMode" }, { status: 400 });
+              }
+
+              if (viewMode !== "full" && viewMode !== "delta") {
+                return Response.json({ error: "Invalid viewMode" }, { status: 400 });
+              }
+
+              const context = await getCurrentReviewContext();
+              const currentFile = findCurrentFile(context.files, filePath, body.oldPath);
+
+              if (!currentFile) {
+                return Response.json({ error: "File not found in current diff" }, { status: 404 });
+              }
+
+              if (viewMode === "full") {
+                return Response.json({
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  viewMode: "full" as const,
+                  patch: currentFile.patch,
+                  snapshotId: context.snapshot.snapshotId,
+                });
+              }
+
+              const checkpoint = getCheckpointForFile(
+                projectName,
+                reviewerId,
+                context.snapshot,
+                currentFile.filePath,
+                currentFile.oldPath,
+              );
+
+              if (!checkpoint || checkpoint.status !== "reviewed") {
+                return Response.json({
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  viewMode: "full" as const,
+                  patch: currentFile.patch,
+                  snapshotId: context.snapshot.snapshotId,
+                });
+              }
+
+              const fileKey = getDiffFileKey(currentFile.filePath, currentFile.oldPath);
+              const currentNewContent = context.currentNewContentByKey.get(fileKey) ?? null;
+              const baselineNewContent = checkpoint.baselineNewContent ?? null;
+
+              if (checkpoint.patchHash === currentFile.patchHash) {
+                return Response.json({
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  viewMode: "full" as const,
+                  patch: currentFile.patch,
+                  snapshotId: context.snapshot.snapshotId,
+                });
+              }
+
+              const deltaPatch = buildDeltaPatch({
+                filePath: currentFile.filePath,
+                baselineNewContent,
+                currentNewContent,
+              });
+
+              if (!deltaPatch.includes("@@")) {
+                return Response.json({
+                  filePath: currentFile.filePath,
+                  oldPath: currentFile.oldPath,
+                  viewMode: "full" as const,
+                  patch: currentFile.patch,
+                  snapshotId: context.snapshot.snapshotId,
+                });
+              }
+
+              return Response.json({
+                filePath: currentFile.filePath,
+                oldPath: currentFile.oldPath,
+                viewMode: "delta" as const,
+                patch: deltaPatch,
+                snapshotId: context.snapshot.snapshotId,
+              });
+            } catch (err) {
+              const message =
+                err instanceof Error ? err.message : "Failed to load file view";
               return Response.json({ error: message }, { status: 500 });
             }
           }

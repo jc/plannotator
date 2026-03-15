@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 
 interface UseGitAddOptions {
   activeDiffBase: string;
-  onFileViewed: (filePath: string) => void;
+  onFileViewed?: (filePath: string) => void;
 }
 
 interface UseGitAddReturn {
@@ -56,9 +56,9 @@ export function useGitAdd({ activeDiffBase, onFileViewed }: UseGitAddOptions): U
         return next;
       });
 
-      // Auto-mark as viewed on stage (not on unstage)
+      // Optional callback for callers that want side effects on stage.
       if (!isUndo) {
-        onFileViewed(filePath);
+        onFileViewed?.(filePath);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Git add failed';

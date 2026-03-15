@@ -7,9 +7,10 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -403,6 +404,305 @@ export function runGitDiff(diffType: DiffType, defaultBranch = "main"): { patch:
   }
 }
 
+type FileReviewStatus = "unreviewed" | "reviewed" | "needs-rereview" | "skipped";
+type FileCheckpointAction = "mark-reviewed" | "skip" | "reset";
+type FileViewMode = "full" | "delta";
+
+interface ReviewSnapshotMeta {
+  snapshotId: string;
+  diffType: string;
+  gitRef: string;
+  baseId: string;
+  headId: string;
+  createdAt: string;
+}
+
+interface CurrentDiffFile {
+  filePath: string;
+  oldPath?: string;
+  patch: string;
+  patchHash: string;
+}
+
+interface ReviewCheckpoint {
+  reviewerId: string;
+  scope: string;
+  filePath: string;
+  oldPath?: string;
+  status: "reviewed" | "skipped";
+  snapshotId: string;
+  patchHash: string;
+  baselineNewContent?: string | null;
+  updatedAt: string;
+}
+
+interface CheckpointStore {
+  checkpoints: Record<string, ReviewCheckpoint>;
+}
+
+function hashString(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hashPatch(patch: string): string {
+  return `h_${hashString(patch).slice(0, 12)}`;
+}
+
+function buildSnapshotMeta(rawPatch: string, diffType: DiffType, gitRef: string): ReviewSnapshotMeta {
+  const sourceHash = hashString(`${diffType}\n${gitRef}\n${rawPatch}`);
+  const indexMatches = Array.from(rawPatch.matchAll(/^index ([0-9a-f]+)\.\.([0-9a-f]+)/gm));
+  const baseSeed = indexMatches.length > 0 ? indexMatches.map((m) => m[1]).join("|") : `${sourceHash}:base`;
+  const headSeed = indexMatches.length > 0 ? indexMatches.map((m) => m[2]).join("|") : `${sourceHash}:head`;
+
+  return {
+    snapshotId: `rev_${sourceHash.slice(0, 12)}`,
+    diffType,
+    gitRef,
+    baseId: hashString(baseSeed).slice(0, 12),
+    headId: hashString(headSeed).slice(0, 12),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function getScope(snapshot: ReviewSnapshotMeta): string {
+  return `${snapshot.diffType}::${snapshot.gitRef}`;
+}
+
+function getDiffFileKey(filePath: string, oldPath?: string): string {
+  return `${oldPath || ""}::${filePath}`;
+}
+
+function parseDiffToCurrentFiles(rawPatch: string): CurrentDiffFile[] {
+  const files: CurrentDiffFile[] = [];
+  const fileChunks = rawPatch.split(/^diff --git /m).filter(Boolean);
+
+  for (const chunk of fileChunks) {
+    const lines = chunk.split("\n");
+    const headerMatch = lines[0]?.match(/^a\/(.+) b\/(.+)$/);
+    if (!headerMatch) continue;
+
+    const oldPath = headerMatch[1];
+    const newPath = headerMatch[2];
+    const patch = `diff --git ${chunk}`;
+
+    files.push({
+      filePath: newPath,
+      oldPath: oldPath !== newPath ? oldPath : undefined,
+      patch,
+      patchHash: hashPatch(patch),
+    });
+  }
+
+  return files;
+}
+
+function reviewStateDir(project: string): string {
+  const safeProject = project.replace(/[^a-zA-Z0-9._-]/g, "_") || "default";
+  const dir = join(os.homedir(), ".plannotator", "review-state", safeProject);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function readCheckpointStore(project: string): CheckpointStore {
+  const path = join(reviewStateDir(project), "pi-checkpoints.json");
+  if (!existsSync(path)) return { checkpoints: {} };
+
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<CheckpointStore>;
+    if (!parsed || typeof parsed !== "object" || !parsed.checkpoints || typeof parsed.checkpoints !== "object") {
+      throw new Error("Invalid checkpoint store shape");
+    }
+    return { checkpoints: parsed.checkpoints as Record<string, ReviewCheckpoint> };
+  } catch {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const corruptPath = `${path}.corrupt-${stamp}.json`;
+    try {
+      copyFileSync(path, corruptPath);
+    } catch {
+      // Ignore copy errors.
+    }
+    writeFileSync(path, JSON.stringify({ checkpoints: {} }, null, 2), "utf-8");
+    return { checkpoints: {} };
+  }
+}
+
+function writeCheckpointStore(project: string, store: CheckpointStore): void {
+  const path = join(reviewStateDir(project), "pi-checkpoints.json");
+  writeFileSync(path, JSON.stringify(store, null, 2), "utf-8");
+}
+
+function checkpointKey(reviewerId: string, scope: string, filePath: string, oldPath?: string): string {
+  return `${reviewerId}::${scope}::${getDiffFileKey(filePath, oldPath)}`;
+}
+
+function findCheckpoint(
+  store: CheckpointStore,
+  reviewerId: string,
+  scope: string,
+  filePath: string,
+  oldPath?: string,
+): ReviewCheckpoint | undefined {
+  const exact = checkpointKey(reviewerId, scope, filePath, oldPath);
+  if (store.checkpoints[exact]) return store.checkpoints[exact];
+
+  if (!oldPath) {
+    const prefix = `${reviewerId}::${scope}::`;
+    let latest: ReviewCheckpoint | undefined;
+
+    for (const [key, cp] of Object.entries(store.checkpoints)) {
+      if (!key.startsWith(prefix)) continue;
+      if (cp.filePath !== filePath) continue;
+      if (!latest || cp.updatedAt > latest.updatedAt) latest = cp;
+    }
+
+    return latest;
+  }
+
+  return undefined;
+}
+
+function deriveFileStatus(file: CurrentDiffFile, checkpoint?: ReviewCheckpoint): { status: FileReviewStatus; deltaAvailable: boolean; lastCheckpointAt?: string } {
+  if (!checkpoint) {
+    return { status: "unreviewed", deltaAvailable: false };
+  }
+
+  if (checkpoint.status === "skipped") {
+    return { status: "skipped", deltaAvailable: false, lastCheckpointAt: checkpoint.updatedAt };
+  }
+
+  if (checkpoint.patchHash === file.patchHash) {
+    return { status: "reviewed", deltaAvailable: false, lastCheckpointAt: checkpoint.updatedAt };
+  }
+
+  return {
+    status: "needs-rereview",
+    deltaAvailable: Object.prototype.hasOwnProperty.call(checkpoint, "baselineNewContent"),
+    lastCheckpointAt: checkpoint.updatedAt,
+  };
+}
+
+function validateFilePath(filePath: string): void {
+  if (!filePath || filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) {
+    throw new Error("Invalid file path");
+  }
+}
+
+function gitShow(ref: string, path: string): string | null {
+  try {
+    return execFileSync("git", ["show", `${ref}:${path}`], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function readWorkingTree(path: string): string | null {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+function getFileContentsForDiff(diffType: DiffType, defaultBranch: string, filePath: string, oldPath?: string): { oldContent: string | null; newContent: string | null } {
+  const oldFilePath = oldPath || filePath;
+
+  switch (diffType) {
+    case "uncommitted":
+      return {
+        oldContent: gitShow("HEAD", oldFilePath),
+        newContent: readWorkingTree(filePath),
+      };
+    case "staged":
+      return {
+        oldContent: gitShow("HEAD", oldFilePath),
+        newContent: gitShow(":0", filePath),
+      };
+    case "unstaged":
+      return {
+        oldContent: gitShow(":0", oldFilePath),
+        newContent: readWorkingTree(filePath),
+      };
+    case "last-commit":
+      return {
+        oldContent: gitShow("HEAD~1", oldFilePath),
+        newContent: gitShow("HEAD", filePath),
+      };
+    case "branch":
+      return {
+        oldContent: gitShow(defaultBranch, oldFilePath),
+        newContent: gitShow("HEAD", filePath),
+      };
+    default:
+      return { oldContent: null, newContent: null };
+  }
+}
+
+function buildDeltaPatch(filePath: string, baselineNewContent: string | null, currentNewContent: string | null): string {
+  if (baselineNewContent === currentNewContent) {
+    return "";
+  }
+
+  const tempDir = mkdtempSync(join(os.tmpdir(), "plannotator-pi-delta-"));
+  try {
+    const oldLabel = baselineNewContent === null ? "/dev/null" : `a/${filePath}`;
+    const newLabel = currentNewContent === null ? "/dev/null" : `b/${filePath}`;
+
+    const oldPath = join(tempDir, "old.txt");
+    const newPath = join(tempDir, "new.txt");
+
+    if (baselineNewContent !== null) {
+      writeFileSync(oldPath, baselineNewContent, "utf-8");
+    }
+    if (currentNewContent !== null) {
+      writeFileSync(newPath, currentNewContent, "utf-8");
+    }
+
+    const oldArg = baselineNewContent === null ? "/dev/null" : oldPath;
+    const newArg = currentNewContent === null ? "/dev/null" : newPath;
+
+    let patch = "";
+    try {
+      patch = execFileSync("git", [
+        "diff",
+        "--no-index",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        oldArg,
+        newArg,
+      ], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      const stdout = (err as { stdout?: string | Buffer }).stdout;
+      if (typeof stdout === "string") {
+        patch = stdout;
+      } else if (stdout && Buffer.isBuffer(stdout)) {
+        patch = stdout.toString("utf-8");
+      }
+    }
+
+    if (!patch) return "";
+
+    const normalized = patch
+      .split("\n")
+      .map((line) => {
+        if (line.startsWith("diff --git ")) return `diff --git ${oldLabel} ${newLabel}`;
+        if (line.startsWith("--- ")) return `--- ${oldLabel}`;
+        if (line.startsWith("+++ ")) return `+++ ${newLabel}`;
+        return line;
+      })
+      .join("\n");
+
+    return normalized;
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 export function startReviewServer(options: {
   rawPatch: string;
   gitRef: string;
@@ -414,6 +714,37 @@ export function startReviewServer(options: {
   let currentPatch = options.rawPatch;
   let currentGitRef = options.gitRef;
   let currentDiffType: DiffType = options.diffType || "uncommitted";
+
+  const projectName = detectProjectName();
+
+  let reviewContext:
+    | {
+        snapshot: ReviewSnapshotMeta;
+        files: CurrentDiffFile[];
+        currentNewContentByKey: Map<string, string | null>;
+      }
+    | null = null;
+
+  const invalidateReviewContext = () => {
+    reviewContext = null;
+  };
+
+  const getCurrentReviewContext = () => {
+    if (reviewContext) return reviewContext;
+
+    const files = parseDiffToCurrentFiles(currentPatch);
+    const snapshot = buildSnapshotMeta(currentPatch, currentDiffType, currentGitRef);
+    const defaultBranch = options.gitContext?.defaultBranch || "main";
+
+    const currentNewContentByKey = new Map<string, string | null>();
+    for (const file of files) {
+      const contents = getFileContentsForDiff(currentDiffType, defaultBranch, file.filePath, file.oldPath);
+      currentNewContentByKey.set(getDiffFileKey(file.filePath, file.oldPath), contents.newContent);
+    }
+
+    reviewContext = { snapshot, files, currentNewContentByKey };
+    return reviewContext;
+  };
 
   let resolveDecision!: (result: { feedback: string }) => void;
   const decisionPromise = new Promise<{ feedback: string }>((r) => {
@@ -443,7 +774,241 @@ export function startReviewServer(options: {
       currentPatch = result.patch;
       currentGitRef = result.label;
       currentDiffType = newType;
+      invalidateReviewContext();
       json(res, { rawPatch: currentPatch, gitRef: currentGitRef, diffType: currentDiffType });
+    } else if (url.pathname === "/api/file-content" && req.method === "GET") {
+      const filePath = url.searchParams.get("path");
+      const oldPath = url.searchParams.get("oldPath") || undefined;
+      if (!filePath) {
+        json(res, { error: "Missing path" }, 400);
+        return;
+      }
+      try {
+        validateFilePath(filePath);
+        if (oldPath) validateFilePath(oldPath);
+      } catch {
+        json(res, { error: "Invalid path" }, 400);
+        return;
+      }
+
+      const defaultBranch = options.gitContext?.defaultBranch || "main";
+      const contents = getFileContentsForDiff(currentDiffType, defaultBranch, filePath, oldPath);
+      json(res, contents);
+    } else if (url.pathname === "/api/git-add" && req.method === "POST") {
+      const body = await parseBody(req);
+      const filePath = body.filePath as string | undefined;
+      const undo = !!body.undo;
+
+      if (!filePath) {
+        json(res, { error: "Missing filePath" }, 400);
+        return;
+      }
+
+      try {
+        validateFilePath(filePath);
+        if (undo) {
+          execFileSync("git", ["reset", "HEAD", "--", filePath], {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } else {
+          execFileSync("git", ["add", "--", filePath], {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        }
+        invalidateReviewContext();
+        json(res, { ok: true });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to run git add";
+        json(res, { error: msg }, 500);
+      }
+    } else if (url.pathname === "/api/review/state" && req.method === "GET") {
+      const reviewerId = url.searchParams.get("reviewerId")?.trim();
+      if (!reviewerId) {
+        json(res, { error: "Missing reviewerId" }, 400);
+        return;
+      }
+
+      const context = getCurrentReviewContext();
+      const checkpointStore = readCheckpointStore(projectName);
+      const scope = getScope(context.snapshot);
+
+      const files = context.files.map((file) => {
+        const checkpoint = findCheckpoint(checkpointStore, reviewerId, scope, file.filePath, file.oldPath);
+        const derived = deriveFileStatus(file, checkpoint);
+        return {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          status: derived.status,
+          patchHash: file.patchHash,
+          deltaAvailable: derived.deltaAvailable,
+          ...(derived.lastCheckpointAt ? { lastCheckpointAt: derived.lastCheckpointAt } : {}),
+        };
+      });
+
+      json(res, {
+        snapshot: context.snapshot,
+        files,
+      });
+    } else if (url.pathname === "/api/review/checkpoint" && req.method === "POST") {
+      const body = await parseBody(req);
+      const reviewerId = (body.reviewerId as string | undefined)?.trim();
+      const filePath = (body.filePath as string | undefined)?.trim();
+      const oldPath = (body.oldPath as string | undefined)?.trim();
+      const action = body.action as FileCheckpointAction | undefined;
+
+      if (!reviewerId || !filePath || !action) {
+        json(res, { error: "Missing reviewerId, filePath, or action" }, 400);
+        return;
+      }
+
+      if (!(["mark-reviewed", "skip", "reset"] as FileCheckpointAction[]).includes(action)) {
+        json(res, { error: "Invalid action" }, 400);
+        return;
+      }
+
+      const context = getCurrentReviewContext();
+      const file = oldPath
+        ? context.files.find((f) => f.filePath === filePath && f.oldPath === oldPath)
+        : context.files.find((f) => f.filePath === filePath);
+
+      if (!file) {
+        json(res, { error: "File not found in current diff" }, 404);
+        return;
+      }
+
+      const store = readCheckpointStore(projectName);
+      const scope = getScope(context.snapshot);
+      const key = checkpointKey(reviewerId, scope, file.filePath, file.oldPath);
+
+      if (action === "reset") {
+        delete store.checkpoints[key];
+      } else if (action === "skip") {
+        store.checkpoints[key] = {
+          reviewerId,
+          scope,
+          filePath: file.filePath,
+          ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+          status: "skipped",
+          snapshotId: context.snapshot.snapshotId,
+          patchHash: file.patchHash,
+          updatedAt: new Date().toISOString(),
+        };
+      } else {
+        const baselineNewContent = context.currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null;
+        store.checkpoints[key] = {
+          reviewerId,
+          scope,
+          filePath: file.filePath,
+          ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+          status: "reviewed",
+          snapshotId: context.snapshot.snapshotId,
+          patchHash: file.patchHash,
+          baselineNewContent,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+
+      writeCheckpointStore(projectName, store);
+      const checkpoint = findCheckpoint(store, reviewerId, scope, file.filePath, file.oldPath);
+      const derived = deriveFileStatus(file, checkpoint);
+
+      json(res, {
+        snapshot: context.snapshot,
+        file: {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          status: derived.status,
+          patchHash: file.patchHash,
+          deltaAvailable: derived.deltaAvailable,
+          ...(derived.lastCheckpointAt ? { lastCheckpointAt: derived.lastCheckpointAt } : {}),
+        },
+      });
+    } else if (url.pathname === "/api/review/file-view" && req.method === "POST") {
+      const body = await parseBody(req);
+      const reviewerId = (body.reviewerId as string | undefined)?.trim();
+      const filePath = (body.filePath as string | undefined)?.trim();
+      const oldPath = (body.oldPath as string | undefined)?.trim();
+      const viewMode = body.viewMode as FileViewMode | undefined;
+
+      if (!reviewerId || !filePath || !viewMode) {
+        json(res, { error: "Missing reviewerId, filePath, or viewMode" }, 400);
+        return;
+      }
+
+      if (viewMode !== "full" && viewMode !== "delta") {
+        json(res, { error: "Invalid viewMode" }, 400);
+        return;
+      }
+
+      const context = getCurrentReviewContext();
+      const file = oldPath
+        ? context.files.find((f) => f.filePath === filePath && f.oldPath === oldPath)
+        : context.files.find((f) => f.filePath === filePath);
+
+      if (!file) {
+        json(res, { error: "File not found in current diff" }, 404);
+        return;
+      }
+
+      if (viewMode === "full") {
+        json(res, {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          viewMode: "full",
+          patch: file.patch,
+          snapshotId: context.snapshot.snapshotId,
+        });
+        return;
+      }
+
+      const store = readCheckpointStore(projectName);
+      const checkpoint = findCheckpoint(store, reviewerId, getScope(context.snapshot), file.filePath, file.oldPath);
+      if (!checkpoint || checkpoint.status !== "reviewed") {
+        json(res, {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          viewMode: "full",
+          patch: file.patch,
+          snapshotId: context.snapshot.snapshotId,
+        });
+        return;
+      }
+
+      if (checkpoint.patchHash === file.patchHash) {
+        json(res, {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          viewMode: "full",
+          patch: file.patch,
+          snapshotId: context.snapshot.snapshotId,
+        });
+        return;
+      }
+
+      const currentNewContent = context.currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null;
+      const baselineNewContent = checkpoint.baselineNewContent ?? null;
+      const deltaPatch = buildDeltaPatch(file.filePath, baselineNewContent, currentNewContent);
+
+      if (!deltaPatch || !deltaPatch.includes("@@")) {
+        json(res, {
+          filePath: file.filePath,
+          oldPath: file.oldPath,
+          viewMode: "full",
+          patch: file.patch,
+          snapshotId: context.snapshot.snapshotId,
+        });
+        return;
+      }
+
+      json(res, {
+        filePath: file.filePath,
+        oldPath: file.oldPath,
+        viewMode: "delta",
+        patch: deltaPatch,
+        snapshotId: context.snapshot.snapshotId,
+      });
     } else if (url.pathname === "/api/feedback" && req.method === "POST") {
       const body = await parseBody(req);
       resolveDecision({ feedback: (body.feedback as string) || "" });
