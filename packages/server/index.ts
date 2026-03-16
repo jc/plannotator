@@ -15,8 +15,10 @@ import { openEditorDiff } from "./ide";
 import {
   saveToObsidian,
   saveToBear,
+  saveToOctarine,
   type ObsidianConfig,
   type BearConfig,
+  type OctarineConfig,
   type IntegrationResult,
 } from "./integrations";
 import {
@@ -33,7 +35,7 @@ import {
 } from "./storage";
 import { getRepoInfo } from "./repo";
 import { detectProjectName } from "./project";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { handleDoc, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc } from "./reference-handlers";
 import { createEditorAnnotationHandler } from "./editor-annotations";
@@ -274,29 +276,33 @@ export async function startPlannotatorServer(
 
           // API: Save to notes (decoupled from approve/deny)
           if (url.pathname === "/api/save-notes" && req.method === "POST") {
-            const results: { obsidian?: IntegrationResult; bear?: IntegrationResult } = {};
+            const results: { obsidian?: IntegrationResult; bear?: IntegrationResult; octarine?: IntegrationResult } = {};
 
             try {
               const body = (await req.json()) as {
                 obsidian?: ObsidianConfig;
                 bear?: BearConfig;
+                octarine?: OctarineConfig;
               };
 
+              // Run integrations in parallel — they're independent
+              const promises: Promise<void>[] = [];
               if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                results.obsidian = await saveToObsidian(body.obsidian);
-                if (results.obsidian.success) {
-                  console.error(`[Obsidian] Saved plan to: ${results.obsidian.path}`);
-                } else {
-                  console.error(`[Obsidian] Save failed: ${results.obsidian.error}`);
-                }
+                promises.push(saveToObsidian(body.obsidian).then(r => { results.obsidian = r; }));
               }
-
               if (body.bear?.plan) {
-                results.bear = await saveToBear(body.bear);
-                if (results.bear.success) {
-                  console.error(`[Bear] Saved plan to Bear`);
-                } else {
-                  console.error(`[Bear] Save failed: ${results.bear.error}`);
+                promises.push(saveToBear(body.bear).then(r => { results.bear = r; }));
+              }
+              if (body.octarine?.plan && body.octarine?.workspace) {
+                promises.push(saveToOctarine(body.octarine).then(r => { results.octarine = r; }));
+              }
+              await Promise.allSettled(promises);
+
+              for (const [name, result] of Object.entries(results)) {
+                if (result?.success) {
+                  console.error(`[${name}] Saved plan${result.path ? ` to: ${result.path}` : ''}`);
+                } else if (result) {
+                  console.error(`[${name}] Save failed: ${result.error}`);
                 }
               }
             } catch (err) {
@@ -319,6 +325,7 @@ export async function startPlannotatorServer(
               const body = (await req.json().catch(() => ({}))) as {
                 obsidian?: ObsidianConfig;
                 bear?: BearConfig;
+                octarine?: OctarineConfig;
                 feedback?: string;
                 agentSwitch?: string;
                 planSave?: { enabled: boolean; customPath?: string };
@@ -346,23 +353,25 @@ export async function startPlannotatorServer(
                 planSaveCustomPath = body.planSave.customPath;
               }
 
-              // Obsidian integration
+              // Run integrations in parallel — they're independent
+              const integrationResults: Record<string, IntegrationResult> = {};
+              const integrationPromises: Promise<void>[] = [];
               if (body.obsidian?.vaultPath && body.obsidian?.plan) {
-                const result = await saveToObsidian(body.obsidian);
-                if (result.success) {
-                  console.error(`[Obsidian] Saved plan to: ${result.path}`);
-                } else {
-                  console.error(`[Obsidian] Save failed: ${result.error}`);
-                }
+                integrationPromises.push(saveToObsidian(body.obsidian).then(r => { integrationResults.obsidian = r; }));
               }
-
-              // Bear integration
               if (body.bear?.plan) {
-                const result = await saveToBear(body.bear);
-                if (result.success) {
-                  console.error(`[Bear] Saved plan to Bear`);
-                } else {
-                  console.error(`[Bear] Save failed: ${result.error}`);
+                integrationPromises.push(saveToBear(body.bear).then(r => { integrationResults.bear = r; }));
+              }
+              if (body.octarine?.plan && body.octarine?.workspace) {
+                integrationPromises.push(saveToOctarine(body.octarine).then(r => { integrationResults.octarine = r; }));
+              }
+              await Promise.allSettled(integrationPromises);
+
+              for (const [name, result] of Object.entries(integrationResults)) {
+                if (result?.success) {
+                  console.error(`[${name}] Saved plan${result.path ? ` to: ${result.path}` : ''}`);
+                } else if (result) {
+                  console.error(`[${name}] Save failed: ${result.error}`);
                 }
               }
             } catch (err) {
@@ -421,6 +430,9 @@ export async function startPlannotatorServer(
             resolveDecision({ approved: false, feedback, savedPath });
             return Response.json({ ok: true, savedPath });
           }
+
+          // Favicon
+          if (url.pathname === "/favicon.svg") return handleFavicon();
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {

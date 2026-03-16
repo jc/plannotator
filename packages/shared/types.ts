@@ -9,24 +9,12 @@ export interface EditorAnnotation {
   createdAt: number;
 }
 
-// Git diff types shared between server and client
-export interface DiffOption {
-  id: string;
-  label: string;
-}
-
-export interface WorktreeInfo {
-  path: string;
-  branch: string | null;
-  head: string;
-}
-
-export interface GitContext {
-  currentBranch: string;
-  defaultBranch: string;
-  diffOptions: DiffOption[];
-  worktrees: WorktreeInfo[];
-}
+// Git review types shared between server and client
+export type {
+  DiffOption,
+  WorktreeInfo,
+  GitContext,
+} from "./review-core";
 
 // Review checkpoint types shared between review server and review editor
 export type FileReviewStatus = "unreviewed" | "reviewed" | "needs-rereview" | "skipped";

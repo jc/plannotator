@@ -23,6 +23,12 @@ export interface BearConfig {
   tagPosition?: 'prepend' | 'append';
 }
 
+export interface OctarineConfig {
+  plan: string;
+  workspace: string;
+  folder: string;
+}
+
 export interface IntegrationResult {
   success: boolean;
   error?: string;
@@ -252,8 +258,10 @@ export async function saveToObsidian(config: ObsidianConfig): Promise<Integratio
     const folderName = folder.trim() || "plannotator";
     const targetFolder = join(normalizedVault, folderName);
 
-    // Create folder if it doesn't exist
-    mkdirSync(targetFolder, { recursive: true });
+    // Create folder if it doesn't exist (guard for Bun mkdirSync regression)
+    if (!existsSync(targetFolder)) {
+      mkdirSync(targetFolder, { recursive: true });
+    }
 
     // Generate filename and full path
     const filename = generateFilename(plan, config.filenameFormat, config.filenameSeparator);
@@ -315,6 +323,48 @@ export async function saveToBear(config: BearConfig): Promise<IntegrationResult>
     await $`open ${url}`.quiet();
 
     return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
+
+// --- Octarine Integration ---
+
+/**
+ * Generate YAML frontmatter for an Octarine note.
+ * Uses Octarine's property format (list-style tags, Status, Author, Last Edited).
+ */
+export function generateOctarineFrontmatter(tags: string[]): string {
+  const now = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
+  const tagLines = tags.map(t => `  - ${t.toLowerCase()}`).join('\n');
+  return `---\ntags:\n${tagLines}\nStatus: Draft\nAuthor: plannotator\nLast Edited: ${now}\n---`;
+}
+
+/**
+ * Save plan to Octarine using octarine:// URI scheme
+ */
+export async function saveToOctarine(config: OctarineConfig): Promise<IntegrationResult> {
+  try {
+    const { plan } = config;
+    const workspace = config.workspace.trim();
+    if (!workspace) return { success: false, error: "Workspace is required" };
+    const folder = config.folder.trim() || 'plannotator';
+
+    const filename = generateFilename(plan);
+    // Strip .md — Octarine auto-adds it
+    const basename = filename.replace(/\.md$/, '');
+    const path = folder ? `${folder}/${basename}` : basename;
+
+    const tags = await extractTags(plan);
+    const frontmatter = generateOctarineFrontmatter(tags);
+    const content = `${frontmatter}\n\n${plan}`;
+
+    const url = `octarine://create?path=${encodeURIComponent(path)}&content=${encodeURIComponent(content)}&workspace=${encodeURIComponent(workspace)}&fresh=true&openAfter=false`;
+
+    await $`open ${url}`.quiet();
+
+    return { success: true, path };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };

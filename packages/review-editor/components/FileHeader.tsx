@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import type {
   FileCheckpointAction,
   FileRevisionStripResponse,
@@ -25,6 +25,7 @@ interface FileHeaderProps {
   onStage?: () => void;
   canStage?: boolean;
   stageError?: string | null;
+  onFileComment?: (anchorEl: HTMLElement) => void;
 }
 
 const STATUS_LABEL: Record<FileReviewStatus, string> = {
@@ -54,8 +55,10 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   onStage,
   canStage = false,
   stageError,
+  onFileComment,
 }) => {
   const [copied, setCopied] = useState(false);
+  const fileCommentRef = useRef<HTMLButtonElement>(null);
 
   const reviewedSnapshotId = revisionStrip?.reviewedSnapshotId;
   const headSnapshotId = revisionStrip?.headSnapshotId;
@@ -250,7 +253,19 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
         {stageError && (
           <span className="text-xs text-destructive">{stageError}</span>
         )}
-
+        {onFileComment && (
+          <button
+            ref={fileCommentRef}
+            onClick={() => fileCommentRef.current && onFileComment(fileCommentRef.current)}
+            className="text-xs px-2 py-1 rounded transition-colors flex items-center gap-1 text-muted-foreground hover:text-foreground hover:bg-muted"
+            title="Add file-scoped comment"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-4l-4 4v-4z" />
+            </svg>
+            File Comment
+          </button>
+        )}
         <button
           onClick={async () => {
             try {

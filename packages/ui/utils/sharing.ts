@@ -27,6 +27,7 @@ export interface SharePayload {
   p: string;  // plan markdown
   a: ShareableAnnotation[];
   g?: ShareableImage[];  // global attachments (path strings or [path, name] tuples)
+  d?: (string | null)[];  // diffContext per annotation, parallel to `a`
 }
 
 /**
@@ -87,7 +88,7 @@ export function toShareable(annotations: Annotation[]): ShareableAnnotation[] {
  * Note: blockId, offsets, and meta will need to be populated separately
  * by finding the text in the rendered document.
  */
-export function fromShareable(data: ShareableAnnotation[]): Annotation[] {
+export function fromShareable(data: ShareableAnnotation[], diffContexts?: (string | null)[] | null): Annotation[] {
   const typeMap: Record<string, AnnotationType> = {
     'D': AnnotationType.DELETION,
     'R': AnnotationType.REPLACEMENT,
@@ -140,9 +141,15 @@ export function fromShareable(data: ShareableAnnotation[]): Annotation[] {
       author: author || undefined,
       images: parseShareableImages(rawImages),
       ...(isQuickLabel ? { isQuickLabel } : {}),
+      ...(diffContexts?.[index] ? { diffContext: diffContexts[index] as Annotation['diffContext'] } : {}),
       // startMeta/endMeta will be set by web-highlighter
     };
   });
+}
+
+function buildDiffContextArray(annotations: Annotation[]): (string | null)[] | null {
+  const arr = annotations.map(a => a.diffContext || null);
+  return arr.some(v => v !== null) ? arr : null;
 }
 
 /**
@@ -154,10 +161,12 @@ export async function generateShareUrl(
   globalAttachments?: ImageAttachment[],
   baseUrl: string = DEFAULT_SHARE_BASE
 ): Promise<string> {
+  const diffContexts = buildDiffContextArray(annotations);
   const payload: SharePayload = {
     p: markdown,
     a: toShareable(annotations),
     g: globalAttachments?.length ? toShareableImages(globalAttachments) : undefined,
+    ...(diffContexts ? { d: diffContexts } : {}),
   };
 
   const hash = await compress(payload);
@@ -225,10 +234,12 @@ export async function createShortShareUrl(
   const shareBase = options?.shareBaseUrl ?? DEFAULT_SHARE_BASE;
 
   try {
+    const diffContexts = buildDiffContextArray(annotations);
     const payload: SharePayload = {
       p: markdown,
       a: toShareable(annotations),
       g: globalAttachments?.length ? toShareableImages(globalAttachments) : undefined,
+      ...(diffContexts ? { d: diffContexts } : {}),
     };
 
     const compressed = await compress(payload);

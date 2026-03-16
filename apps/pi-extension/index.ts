@@ -28,13 +28,26 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import { Key } from "@mariozechner/pi-tui";
 import { markCompletedSteps, parseChecklist, type ChecklistItem } from "./utils.js";
 import {
+  type AnnotateServerResult,
   startPlanReviewServer,
+  type PlanServerResult,
   startReviewServer,
+  type ReviewServerResult,
   startAnnotateServer,
   getGitContext,
   runGitDiff,
   openBrowser,
 } from "./server.js";
+import { planDenyFeedback } from "./feedback-templates.js";
+
+// ── Types ──────────────────────────────────────────────────────────────
+
+/** Common interface for servers that can wait for a user decision in a browser. */
+interface DecisionServer<T> {
+  url: string;
+  stop: () => void;
+  waitForDecision: () => Promise<T>;
+}
 
 // Load HTML at runtime (jiti doesn't support import attributes)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +78,29 @@ function getTextContent(message: AssistantMessage): string {
     .filter((block): block is TextContent => block.type === "text")
     .map((block) => block.text)
     .join("\n");
+}
+
+/**
+ * Open browser for user review, wait for decision, then stop server.
+ * Handles remote session notification automatically.
+ */
+async function runBrowserReview<T>(
+  server: DecisionServer<T>,
+  ctx: ExtensionContext,
+): Promise<T> {
+  const browserResult = openBrowser(server.url);
+  if (browserResult.isRemote) {
+    ctx.ui.notify(`Remote session. Open manually: ${browserResult.url}`, "info");
+  }
+
+  const result = await server.waitForDecision();
+  await new Promise((r) => setTimeout(r, 1500));
+  server.stop();
+  return result;
+}
+
+function getStartupErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : "Unknown error";
 }
 
 export default function plannotator(pi: ExtensionAPI): void {
@@ -236,26 +272,39 @@ export default function plannotator(pi: ExtensionAPI): void {
 
       ctx.ui.notify("Opening code review UI...", "info");
 
-      const gitCtx = getGitContext();
-      const { patch: rawPatch, label: gitRef } = runGitDiff("uncommitted", gitCtx.defaultBranch);
+      let server: ReviewServerResult;
+      try {
+        const gitCtx = await getGitContext();
+        const {
+          patch: rawPatch,
+          label: gitRef,
+          error,
+        } = await runGitDiff("uncommitted", gitCtx.defaultBranch);
 
-      const server = startReviewServer({
-        rawPatch,
-        gitRef,
-        origin: "pi",
-        diffType: "uncommitted",
-        gitContext: gitCtx,
-        htmlContent: reviewHtmlContent,
-      });
+        server = await startReviewServer({
+          rawPatch,
+          gitRef,
+          error,
+          origin: "pi",
+          diffType: "uncommitted",
+          gitContext: gitCtx,
+          htmlContent: reviewHtmlContent,
+          sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
+          shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
+        });
+      } catch (err) {
+        ctx.ui.notify(`Failed to start code review UI: ${getStartupErrorMessage(err)}`, "error");
+        return;
+      }
 
-      openBrowser(server.url);
-
-      const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      const result = await runBrowserReview(server, ctx);
 
       if (result.feedback) {
-        pi.sendUserMessage(`# Code Review Feedback\n\n${result.feedback}\n\nPlease address this feedback.`);
+        if (result.approved) {
+          pi.sendUserMessage(`# Code Review\n\nCode review completed — no changes requested.`);
+        } else {
+          pi.sendUserMessage(`# Code Review Feedback\n\n${result.feedback}\n\nPlease address this feedback.`);
+        }
       } else {
         ctx.ui.notify("Code review closed (no feedback).", "info");
       }
@@ -284,18 +333,20 @@ export default function plannotator(pi: ExtensionAPI): void {
       ctx.ui.notify(`Opening annotation UI for ${filePath}...`, "info");
 
       const markdown = readFileSync(absolutePath, "utf-8");
-      const server = startAnnotateServer({
-        markdown,
-        filePath: absolutePath,
-        origin: "pi",
-        htmlContent: planHtmlContent,
-      });
+      let server: AnnotateServerResult;
+      try {
+        server = await startAnnotateServer({
+          markdown,
+          filePath: absolutePath,
+          origin: "pi",
+          htmlContent: planHtmlContent,
+        });
+      } catch (err) {
+        ctx.ui.notify(`Failed to start annotation UI: ${getStartupErrorMessage(err)}`, "error");
+        return;
+      }
 
-      openBrowser(server.url);
-
-      const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      const result = await runBrowserReview(server, ctx);
 
       if (result.feedback) {
         pi.sendUserMessage(
@@ -386,18 +437,23 @@ export default function plannotator(pi: ExtensionAPI): void {
       }
 
       // Start browser-based plan review server
-      const server = startPlanReviewServer({
-        plan: planContent,
-        htmlContent: planHtmlContent,
-        origin: "pi",
-      });
+      let server: PlanServerResult;
+      try {
+        server = await startPlanReviewServer({
+          plan: planContent,
+          htmlContent: planHtmlContent,
+          origin: "pi",
+        });
+      } catch (err) {
+        const message = `Failed to start plan review UI: ${getStartupErrorMessage(err)}`;
+        ctx.ui.notify(message, "error");
+        return {
+          content: [{ type: "text", text: message }],
+          details: { approved: false },
+        };
+      }
 
-      openBrowser(server.url);
-
-      // Wait for user decision in the browser
-      const result = await server.waitForDecision();
-      await new Promise((r) => setTimeout(r, 1500));
-      server.stop();
+      const result = await runBrowserReview(server, ctx);
 
       if (result.approved) {
         phase = "executing";
@@ -441,7 +497,7 @@ export default function plannotator(pi: ExtensionAPI): void {
         content: [
           {
             type: "text",
-            text: `Plan not approved.\n\nUser feedback: ${feedbackText}\n\nRevise the plan:\n1. Read ${planFilePath} to see the current plan.\n2. Use the edit tool to make targeted changes addressing the feedback above — do not rewrite the entire file.\n3. Call exit_plan_mode again when ready.`,
+            text: planDenyFeedback(feedbackText, "exit_plan_mode", { planFilePath }),
           },
         ],
         details: { approved: false, feedback: feedbackText },

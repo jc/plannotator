@@ -27,7 +27,7 @@ import {
   resolveFileRevisionSnapshot,
   type CurrentDiffFile,
 } from "./review-state";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
 import type { FileCheckpointAction, FileViewMode, ReviewSnapshotMeta } from "@plannotator/shared/types";
@@ -72,8 +72,9 @@ export interface ReviewServerResult {
   url: string;
   /** Whether running in remote mode */
   isRemote: boolean;
-  /** Wait for user feedback submission */
+  /** Wait for user review decision */
   waitForDecision: () => Promise<{
+    approved: boolean;
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
@@ -192,11 +193,13 @@ export async function startReviewServer(
 
   // Decision promise
   let resolveDecision: (result: {
+    approved: boolean;
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
   }) => void;
   const decisionPromise = new Promise<{
+    approved: boolean;
     feedback: string;
     annotations: unknown[];
     agentSwitch?: string;
@@ -671,6 +674,7 @@ export async function startReviewServer(
           if (url.pathname === "/api/feedback" && req.method === "POST") {
             try {
               const body = (await req.json()) as {
+                approved?: boolean;
                 feedback: string;
                 annotations: unknown[];
                 agentSwitch?: string;
@@ -678,6 +682,7 @@ export async function startReviewServer(
 
               deleteDraft(draftKey);
               resolveDecision({
+                approved: body.approved ?? false,
                 feedback: body.feedback || "",
                 annotations: body.annotations || [],
                 agentSwitch: body.agentSwitch,
@@ -690,6 +695,9 @@ export async function startReviewServer(
               return Response.json({ error: message }, { status: 500 });
             }
           }
+
+          // Favicon
+          if (url.pathname === "/favicon.svg") return handleFavicon();
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {

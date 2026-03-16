@@ -8,6 +8,7 @@
 
 import React, { useState } from "react";
 import type { PlanDiffBlock, PlanDiffStats } from "../../utils/planDiffEngine";
+import type { Annotation, EditorMode } from "../../types";
 import {
   PlanDiffModeSwitcher,
   type PlanDiffMode,
@@ -27,6 +28,12 @@ interface PlanDiffViewerProps {
   baseVersionLabel?: string;
   baseVersion?: number;
   maxWidth?: number;
+  // Annotation props
+  annotations?: Annotation[];
+  onAddAnnotation?: (ann: Annotation) => void;
+  onSelectAnnotation?: (id: string | null) => void;
+  selectedAnnotationId?: string | null;
+  mode?: EditorMode;
 }
 
 export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
@@ -39,6 +46,11 @@ export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
   baseVersionLabel,
   baseVersion,
   maxWidth,
+  annotations,
+  onAddAnnotation,
+  onSelectAnnotation,
+  selectedAnnotationId,
+  mode,
 }) => {
   const [vscodeDiffLoading, setVscodeDiffLoading] = useState(false);
   const [vscodeDiffError, setVscodeDiffError] = useState<string | null>(null);
@@ -166,7 +178,14 @@ export const PlanDiffViewer: React.FC<PlanDiffViewerProps> = ({
 
         {/* Diff content */}
         {diffMode === "clean" ? (
-          <PlanCleanDiffView blocks={diffBlocks} />
+          <PlanCleanDiffView
+            blocks={diffBlocks}
+            annotations={annotations}
+            onAddAnnotation={onAddAnnotation}
+            onSelectAnnotation={onSelectAnnotation}
+            selectedAnnotationId={selectedAnnotationId}
+            mode={mode}
+          />
         ) : (
           <PlanRawDiffView blocks={diffBlocks} />
         )}

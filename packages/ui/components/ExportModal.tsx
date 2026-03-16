@@ -9,6 +9,8 @@
 import React, { useState, useEffect } from 'react';
 import { getObsidianSettings, getEffectiveVaultPath } from '../utils/obsidian';
 import { getBearSettings } from '../utils/bear';
+import { getOctarineSettings } from '../utils/octarine';
+import { wrapFeedbackForAgent } from '../utils/parser';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -34,7 +36,7 @@ interface ExportModalProps {
 
 type Tab = 'share' | 'annotations' | 'notes';
 
-type SaveTarget = 'obsidian' | 'bear';
+type SaveTarget = 'obsidian' | 'bear' | 'octarine';
 type SaveStatus = 'idle' | 'saving' | 'success' | 'error';
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -57,7 +59,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const defaultTab = initialTab || (sharingEnabled ? 'share' : 'annotations');
   const [activeTab, setActiveTab] = useState<Tab>(defaultTab);
   const [copied, setCopied] = useState<'short' | 'full' | 'annotations' | false>(false);
-  const [saveStatus, setSaveStatus] = useState<Record<SaveTarget, SaveStatus>>({ obsidian: 'idle', bear: 'idle' });
+  const [saveStatus, setSaveStatus] = useState<Record<SaveTarget, SaveStatus>>({ obsidian: 'idle', bear: 'idle', octarine: 'idle' });
   const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
 
   // Reset tab when modal opens
@@ -70,7 +72,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   // Reset save status when modal opens
   useEffect(() => {
     if (isOpen) {
-      setSaveStatus({ obsidian: 'idle', bear: 'idle' });
+      setSaveStatus({ obsidian: 'idle', bear: 'idle', octarine: 'idle' });
       setSaveErrors({});
     }
   }, [isOpen]);
@@ -80,9 +82,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const showNotesTab = isApiMode && !!markdown;
   const obsidianSettings = getObsidianSettings();
   const bearSettings = getBearSettings();
+  const octarineSettings = getOctarineSettings();
   const effectiveVaultPath = getEffectiveVaultPath(obsidianSettings);
   const isObsidianReady = obsidianSettings.enabled && effectiveVaultPath.trim().length > 0;
   const isBearReady = bearSettings.enabled;
+  const isOctarineReady = octarineSettings.enabled && octarineSettings.workspace.trim().length > 0;
 
   const handleCopy = async (text: string, which: 'short' | 'full' | 'annotations') => {
     try {
@@ -95,7 +99,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   };
 
   const handleCopyAnnotations = async () => {
-    await handleCopy(annotationsOutput, 'annotations');
+    await handleCopy(wrapFeedbackForAgent(annotationsOutput), 'annotations');
   };
 
   // Whether the hash URL is large enough to warrant a short URL option
@@ -117,7 +121,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     setSaveStatus(prev => ({ ...prev, [target]: 'saving' }));
     setSaveErrors(prev => { const next = { ...prev }; delete next[target]; return next; });
 
-    const body: { obsidian?: object; bear?: object } = {};
+    const body: { obsidian?: object; bear?: object; octarine?: object } = {};
 
     if (target === 'obsidian') {
       body.obsidian = {
@@ -130,6 +134,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     }
     if (target === 'bear') {
       body.bear = { plan: markdown };
+    }
+    if (target === 'octarine') {
+      body.octarine = {
+        plan: markdown,
+        workspace: octarineSettings.workspace,
+        folder: octarineSettings.folder || 'plannotator',
+      };
     }
 
     try {
@@ -157,8 +168,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     const targets: SaveTarget[] = [];
     if (isObsidianReady) targets.push('obsidian');
     if (isBearReady) targets.push('bear');
+    if (isOctarineReady) targets.push('octarine');
     await Promise.all(targets.map(t => handleSaveToNotes(t)));
   };
+
+  const readyCount = [isObsidianReady, isBearReady, isOctarineReady].filter(Boolean).length;
 
   // Determine which tabs to show
   const showTabs = sharingEnabled || showNotesTab;
@@ -436,12 +450,57 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 )}
               </div>
 
+              {/* Octarine */}
+              <div className="border border-border rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${isOctarineReady ? 'bg-success' : 'bg-muted-foreground/30'}`} />
+                    <span className="text-sm font-medium">Octarine</span>
+                  </div>
+                  {isOctarineReady ? (
+                    <button
+                      onClick={() => handleSaveToNotes('octarine')}
+                      disabled={saveStatus.octarine === 'saving'}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                        saveStatus.octarine === 'success'
+                          ? 'bg-success/15 text-success'
+                          : saveStatus.octarine === 'error'
+                            ? 'bg-destructive/15 text-destructive'
+                            : saveStatus.octarine === 'saving'
+                              ? 'bg-muted text-muted-foreground opacity-50'
+                              : 'bg-primary text-primary-foreground hover:opacity-90'
+                      }`}
+                    >
+                      {saveStatus.octarine === 'saving' ? 'Saving...'
+                        : saveStatus.octarine === 'success' ? 'Saved'
+                        : saveStatus.octarine === 'error' ? 'Failed'
+                        : 'Save'}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Not configured</span>
+                  )}
+                </div>
+                {isOctarineReady && (
+                  <div className="text-[10px] text-muted-foreground/70">
+                    {octarineSettings.workspace} / {octarineSettings.folder || 'plannotator'}/
+                  </div>
+                )}
+                {!isOctarineReady && (
+                  <div className="text-[10px] text-muted-foreground/70">
+                    Enable in Settings &gt; Saving &gt; Octarine
+                  </div>
+                )}
+                {saveErrors.octarine && (
+                  <div className="text-[10px] text-destructive">{saveErrors.octarine}</div>
+                )}
+              </div>
+
               {/* Save All button */}
-              {isObsidianReady && isBearReady && (
+              {readyCount >= 2 && (
                 <div className="flex justify-end">
                   <button
                     onClick={handleSaveAll}
-                    disabled={saveStatus.obsidian === 'saving' || saveStatus.bear === 'saving'}
+                    disabled={saveStatus.obsidian === 'saving' || saveStatus.bear === 'saving' || saveStatus.octarine === 'saving'}
                     className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
                   >
                     Save All

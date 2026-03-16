@@ -1,39 +1,354 @@
 /**
- * PlanCleanDiffView — Rendered/clean diff mode (P1 style)
+ * PlanCleanDiffView — Rendered/clean diff mode
  *
  * Shows the new plan content rendered as markdown, with colored left borders
- * indicating what changed:
- * - Green: added content
- * - Red: removed content (with strikethrough)
- * - Modified: old content (red, struck through) above new content (green)
- * - Unchanged: normal rendering, slightly dimmed
- *
- * Reuses parseMarkdownToBlocks() for rendering consistency with the plan view.
+ * indicating what changed. Annotation uses block-level hover (like code block
+ * hover in Viewer) — no text selection, no web-highlighter.
  */
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import hljs from "highlight.js";
 import { parseMarkdownToBlocks } from "../../utils/parser";
-import type { Block } from "../../types";
+import type { Block, Annotation, EditorMode, ImageAttachment } from "../../types";
+import { AnnotationType } from "../../types";
 import type { PlanDiffBlock } from "../../utils/planDiffEngine";
+import type { QuickLabel } from "../../utils/quickLabels";
+import { AnnotationToolbar } from "../AnnotationToolbar";
+import { CommentPopover } from "../CommentPopover";
+import { FloatingQuickLabelPicker } from "../FloatingQuickLabelPicker";
+import { getIdentity } from "../../utils/identity";
 
 interface PlanCleanDiffViewProps {
   blocks: PlanDiffBlock[];
+  annotations?: Annotation[];
+  onAddAnnotation?: (ann: Annotation) => void;
+  onSelectAnnotation?: (id: string | null) => void;
+  selectedAnnotationId?: string | null;
+  mode?: EditorMode;
 }
 
 export const PlanCleanDiffView: React.FC<PlanCleanDiffViewProps> = ({
   blocks,
+  annotations = [],
+  onAddAnnotation,
+  onSelectAnnotation,
+  selectedAnnotationId = null,
+  mode = "selection",
 }) => {
+  const modeRef = useRef<EditorMode>(mode);
+  const onAddAnnotationRef = useRef(onAddAnnotation);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [hoveredBlock, setHoveredBlock] = useState<{
+    element: HTMLElement;
+    block: PlanDiffBlock;
+    index: number;
+    diffContext: Annotation['diffContext'];
+  } | null>(null);
+  const [isExiting, setIsExiting] = useState(false);
+
+  const [commentPopover, setCommentPopover] = useState<{
+    anchorEl: HTMLElement;
+    contextText: string;
+    initialText?: string;
+    block: PlanDiffBlock;
+    index: number;
+    diffContext: Annotation['diffContext'];
+  } | null>(null);
+
+  const [quickLabelPicker, setQuickLabelPicker] = useState<{
+    anchorEl: HTMLElement;
+    block: PlanDiffBlock;
+    index: number;
+    diffContext: Annotation['diffContext'];
+  } | null>(null);
+
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+  useEffect(() => { onAddAnnotationRef.current = onAddAnnotation; }, [onAddAnnotation]);
+
+  // Clean up timers on unmount
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
+    };
+  }, []);
+
+  // Scroll to selected annotation's diff block
+  // Only depends on selectedAnnotationId — annotations ref is read but not a trigger
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
+
+  useEffect(() => {
+    if (!selectedAnnotationId) return;
+
+    const ann = annotationsRef.current.find(a => a.id === selectedAnnotationId);
+    if (!ann?.blockId?.startsWith('diff-block-')) return;
+
+    const idx = ann.blockId.replace('diff-block-', '');
+    const el = document.querySelector(`[data-diff-block-index="${idx}"]`);
+    if (!el) return;
+
+    el.classList.add('annotation-highlight', 'focused');
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    const timer = setTimeout(() => {
+      el.classList.remove('annotation-highlight', 'focused');
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [selectedAnnotationId]);
+
+  // Build set of annotated block IDs for highlight rings
+  const annotatedBlockIds = React.useMemo(() => {
+    const set = new Set<string>();
+    annotations.forEach(ann => {
+      if (ann.diffContext && ann.blockId) {
+        set.add(ann.blockId);
+      }
+    });
+    return set;
+  }, [annotations]);
+
+  /** Resolve content for a diff block section (handles modified blocks with old/new sides) */
+  const getBlockContent = useCallback((block: PlanDiffBlock, diffContext: Annotation['diffContext']) =>
+    block.type === 'modified' && diffContext === 'removed'
+      ? block.oldContent || block.content
+      : block.content
+  , []);
+
+  const createDiffAnnotation = useCallback((
+    block: PlanDiffBlock,
+    index: number,
+    diffContext: Annotation['diffContext'],
+    type: AnnotationType,
+    text?: string,
+    images?: ImageAttachment[],
+    isQuickLabel?: boolean,
+    quickLabelTip?: string,
+  ) => {
+    const content = getBlockContent(block, diffContext);
+    const now = Date.now();
+
+    const newAnnotation: Annotation = {
+      id: `diff-${now}-${index}`,
+      blockId: `diff-block-${index}`,
+      startOffset: 0,
+      endOffset: content.length,
+      type,
+      text,
+      originalText: content,
+      createdA: now,
+      author: getIdentity(),
+      images,
+      diffContext,
+      ...(isQuickLabel ? { isQuickLabel: true } : {}),
+      ...(quickLabelTip ? { quickLabelTip } : {}),
+    };
+
+    onAddAnnotationRef.current?.(newAnnotation);
+  }, [getBlockContent]);
+
+  // Hover handlers
+  const handleHover = useCallback((element: HTMLElement, block: PlanDiffBlock, index: number, diffContext: Annotation['diffContext']) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+    setIsExiting(false);
+    if (!commentPopover && !quickLabelPicker) {
+      setHoveredBlock({ element, block, index, diffContext });
+    }
+  }, [commentPopover, quickLabelPicker]);
+
+  const handleLeave = useCallback(() => {
+    hoverTimeoutRef.current = setTimeout(() => {
+      setIsExiting(true);
+      exitTimerRef.current = setTimeout(() => {
+        setHoveredBlock(null);
+        setIsExiting(false);
+        exitTimerRef.current = null;
+      }, 150);
+    }, 100);
+  }, []);
+
+  // Toolbar handlers
+  const handleAnnotate = (type: AnnotationType) => {
+    if (!hoveredBlock) return;
+    createDiffAnnotation(hoveredBlock.block, hoveredBlock.index, hoveredBlock.diffContext, type);
+    setHoveredBlock(null);
+    setIsExiting(false);
+  };
+
+  const handleQuickLabel = (label: QuickLabel) => {
+    if (!hoveredBlock) return;
+    createDiffAnnotation(
+      hoveredBlock.block, hoveredBlock.index, hoveredBlock.diffContext,
+      AnnotationType.COMMENT, `${label.emoji} ${label.text}`, undefined, true, label.tip
+    );
+    setHoveredBlock(null);
+    setIsExiting(false);
+  };
+
+  const handleToolbarClose = () => {
+    setHoveredBlock(null);
+    setIsExiting(false);
+  };
+
+  const handleRequestComment = (initialChar?: string) => {
+    if (!hoveredBlock) return;
+    const content = getBlockContent(hoveredBlock.block, hoveredBlock.diffContext);
+    setCommentPopover({
+      anchorEl: hoveredBlock.element,
+      contextText: content.slice(0, 80),
+      initialText: initialChar,
+      block: hoveredBlock.block,
+      index: hoveredBlock.index,
+      diffContext: hoveredBlock.diffContext,
+    });
+    setHoveredBlock(null);
+  };
+
+  const handleCommentSubmit = (text: string, images?: ImageAttachment[]) => {
+    if (!commentPopover) return;
+    createDiffAnnotation(
+      commentPopover.block, commentPopover.index, commentPopover.diffContext,
+      AnnotationType.COMMENT, text, images
+    );
+    setCommentPopover(null);
+  };
+
+  const handleCommentClose = useCallback(() => {
+    setCommentPopover(null);
+  }, []);
+
+  const handleFloatingQuickLabel = useCallback((label: QuickLabel) => {
+    if (!quickLabelPicker) return;
+    createDiffAnnotation(
+      quickLabelPicker.block, quickLabelPicker.index, quickLabelPicker.diffContext,
+      AnnotationType.COMMENT, `${label.emoji} ${label.text}`, undefined, true, label.tip
+    );
+    setQuickLabelPicker(null);
+  }, [quickLabelPicker, createDiffAnnotation]);
+
+  const handleQuickLabelPickerDismiss = useCallback(() => {
+    setQuickLabelPicker(null);
+  }, []);
+
+  // Mode-aware click on hovered block
+  const handleBlockClick = useCallback((block: PlanDiffBlock, index: number, element: HTMLElement, diffContext: Annotation['diffContext']) => {
+    if (modeRef.current === 'redline') {
+      createDiffAnnotation(block, index, diffContext, AnnotationType.DELETION);
+    } else if (modeRef.current === 'comment') {
+      const content = getBlockContent(block, diffContext);
+      setCommentPopover({
+        anchorEl: element,
+        contextText: content.slice(0, 80),
+        block,
+        index,
+        diffContext,
+      });
+    } else if (modeRef.current === 'quickLabel') {
+      setQuickLabelPicker({ anchorEl: element, block, index, diffContext });
+    }
+  }, [createDiffAnnotation, getBlockContent]);
+
+  // Check if a block index has been annotated (for highlight ring)
+  const isBlockAnnotated = (index: number) => annotatedBlockIds.has(`diff-block-${index}`);
+
   return (
     <div className="space-y-1">
       {blocks.map((block, index) => (
-        <DiffBlockRenderer key={index} block={block} />
+        <DiffBlockRenderer
+          key={index}
+          block={block}
+          index={index}
+          hoveredIndex={hoveredBlock?.index ?? null}
+          hoveredDiffContext={hoveredBlock?.diffContext}
+          isBlockAnnotated={isBlockAnnotated}
+          onHover={onAddAnnotation ? (el, diffContext) => handleHover(el, block, index, diffContext) : undefined}
+          onLeave={onAddAnnotation ? handleLeave : undefined}
+          onClick={onAddAnnotation && mode !== 'selection' ? (el, diffContext) => handleBlockClick(block, index, el, diffContext) : undefined}
+        />
       ))}
+
+      {/* Block hover toolbar (selection mode) */}
+      {hoveredBlock && !commentPopover && !quickLabelPicker && (
+        <AnnotationToolbar
+          element={hoveredBlock.element}
+          positionMode="top-right"
+          onAnnotate={handleAnnotate}
+          onClose={handleToolbarClose}
+          onRequestComment={handleRequestComment}
+          onQuickLabel={handleQuickLabel}
+          isExiting={isExiting}
+          onMouseEnter={() => {
+            if (hoverTimeoutRef.current) {
+              clearTimeout(hoverTimeoutRef.current);
+              hoverTimeoutRef.current = null;
+            }
+            setIsExiting(false);
+          }}
+          onMouseLeave={handleLeave}
+        />
+      )}
+
+      {/* Comment popover */}
+      {commentPopover && (
+        <CommentPopover
+          anchorEl={commentPopover.anchorEl}
+          contextText={commentPopover.contextText}
+          isGlobal={false}
+          initialText={commentPopover.initialText}
+          onSubmit={handleCommentSubmit}
+          onClose={handleCommentClose}
+        />
+      )}
+
+      {/* Quick label picker */}
+      {quickLabelPicker && (
+        <FloatingQuickLabelPicker
+          anchorEl={quickLabelPicker.anchorEl}
+          onSelect={handleFloatingQuickLabel}
+          onDismiss={handleQuickLabelPickerDismiss}
+        />
+      )}
     </div>
   );
 };
 
-const DiffBlockRenderer: React.FC<{ block: PlanDiffBlock }> = ({ block }) => {
+// --- DiffBlockRenderer with hover support ---
+
+interface DiffBlockRendererProps {
+  block: PlanDiffBlock;
+  index: number;
+  hoveredIndex: number | null;
+  hoveredDiffContext?: Annotation['diffContext'];
+  isBlockAnnotated: (index: number) => boolean;
+  onHover?: (element: HTMLElement, diffContext: Annotation['diffContext']) => void;
+  onLeave?: () => void;
+  onClick?: (element: HTMLElement, diffContext: Annotation['diffContext']) => void;
+}
+
+const DiffBlockRenderer: React.FC<DiffBlockRendererProps> = ({
+  block, index, hoveredIndex, hoveredDiffContext, isBlockAnnotated, onHover, onLeave, onClick,
+}) => {
+  const hoverProps = (diffContext: Annotation['diffContext']) => onHover ? {
+    onMouseEnter: (e: React.MouseEvent<HTMLDivElement>) => onHover(e.currentTarget, diffContext),
+    onMouseLeave: () => onLeave?.(),
+    onClick: onClick ? (e: React.MouseEvent<HTMLDivElement>) => onClick(e.currentTarget, diffContext) : undefined,
+    style: { cursor: 'pointer' } as React.CSSProperties,
+  } : {};
+
+  const isHovered = (diffContext: Annotation['diffContext']) =>
+    hoveredIndex === index && hoveredDiffContext === diffContext;
+
+  const ringClass = (diffContext: Annotation['diffContext']) => {
+    if (isHovered(diffContext)) return 'ring-1 ring-primary/30 rounded';
+    if (isBlockAnnotated(index)) return 'ring-2 ring-accent rounded outline-offset-2';
+    return '';
+  };
+
   switch (block.type) {
     case "unchanged":
       return (
@@ -44,20 +359,42 @@ const DiffBlockRenderer: React.FC<{ block: PlanDiffBlock }> = ({ block }) => {
 
     case "added":
       return (
-        <div className="plan-diff-added">
+        <div
+          className={`plan-diff-added transition-shadow ${ringClass('added')}`}
+          data-diff-block-index={index}
+          {...hoverProps('added')}
+        >
           <MarkdownChunk content={block.content} />
         </div>
       );
 
     case "removed":
-      return <RemovedBlock content={block.content} />;
+      return (
+        <div
+          className={`plan-diff-removed line-through decoration-destructive/30 opacity-70 transition-shadow ${ringClass('removed')}`}
+          data-diff-block-index={index}
+          {...hoverProps('removed')}
+        >
+          <MarkdownChunk content={block.content} />
+        </div>
+      );
 
     case "modified":
       return (
-        <ModifiedBlock
-          content={block.content}
-          oldContent={block.oldContent!}
-        />
+        <div data-diff-block-index={index}>
+          <div
+            className={`plan-diff-removed line-through decoration-destructive/30 opacity-60 transition-shadow ${ringClass('removed')}`}
+            {...hoverProps('removed')}
+          >
+            <MarkdownChunk content={block.oldContent!} />
+          </div>
+          <div
+            className={`plan-diff-added transition-shadow ${ringClass('modified')}`}
+            {...hoverProps('modified')}
+          >
+            <MarkdownChunk content={block.content} />
+          </div>
+        </div>
       );
 
     default:
@@ -65,40 +402,8 @@ const DiffBlockRenderer: React.FC<{ block: PlanDiffBlock }> = ({ block }) => {
   }
 };
 
-/**
- * Removed content — always visible with red styling and strikethrough.
- */
-const RemovedBlock: React.FC<{ content: string }> = ({ content }) => {
-  return (
-    <div className="plan-diff-removed line-through decoration-destructive/30 opacity-70">
-      <MarkdownChunk content={content} />
-    </div>
-  );
-};
+// --- Rendering components (unchanged from main) ---
 
-/**
- * Modified content — shows old content (red, struck through) above new content (green border).
- */
-const ModifiedBlock: React.FC<{
-  content: string;
-  oldContent: string;
-}> = ({ content, oldContent }) => {
-  return (
-    <div>
-      <div className="plan-diff-removed line-through decoration-destructive/30 opacity-60">
-        <MarkdownChunk content={oldContent} />
-      </div>
-      <div className="plan-diff-added">
-        <MarkdownChunk content={content} />
-      </div>
-    </div>
-  );
-};
-
-/**
- * Renders a markdown string chunk using parseMarkdownToBlocks + simplified block rendering.
- * Reuses the same visual output as the Viewer component.
- */
 const MarkdownChunk: React.FC<{ content: string }> = ({ content }) => {
   const blocks = React.useMemo(
     () => parseMarkdownToBlocks(content),
@@ -114,10 +419,6 @@ const MarkdownChunk: React.FC<{ content: string }> = ({ content }) => {
   );
 };
 
-/**
- * Simplified block renderer — same visual output as Viewer's BlockRenderer
- * but without annotations, code block hover, or mermaid support.
- */
 const SimpleBlockRenderer: React.FC<{ block: Block }> = ({ block }) => {
   switch (block.type) {
     case "heading": {
@@ -252,9 +553,6 @@ const SimpleBlockRenderer: React.FC<{ block: Block }> = ({ block }) => {
   }
 };
 
-/**
- * Simplified code block with syntax highlighting (no hover/copy toolbar).
- */
 const SimpleCodeBlock: React.FC<{ block: Block }> = ({ block }) => {
   const codeRef = useRef<HTMLElement>(null);
 
@@ -285,10 +583,6 @@ const SimpleCodeBlock: React.FC<{ block: Block }> = ({ block }) => {
   );
 };
 
-/**
- * Inline markdown renderer — handles bold, italic, inline code, links.
- * Duplicated from Viewer for self-containment.
- */
 const InlineMarkdown: React.FC<{ text: string }> = ({ text }) => {
   const parts: React.ReactNode[] = [];
   let remaining = text;

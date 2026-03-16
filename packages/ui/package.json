@@ -6,7 +6,8 @@
     "./components/*": "./components/*.tsx",
     "./utils/*": "./utils/*.ts",
     "./hooks/*": "./hooks/*.ts",
-    "./types": "./types.ts"
+    "./types": "./types.ts",
+    "./theme": "./theme.css"
   },
   "dependencies": {
     "@plannotator/shared": "workspace:*",

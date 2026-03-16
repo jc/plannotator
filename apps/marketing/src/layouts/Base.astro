@@ -23,6 +23,7 @@ import '../styles/global.css';
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <meta name="description" content={description} />
 
     <meta property="og:type" content="website" />
@@ -46,15 +47,19 @@ import '../styles/global.css';
   <body class="min-h-screen antialiased">
     <slot />
     <script is:inline>
-      // Read theme cookie and set class before paint to prevent FOUC
+      // Read theme cookies and set classes before paint to prevent FOUC
       (function() {
-        var match = document.cookie.match(/(?:^|; )plannotator-theme=([^;]*)/);
-        var theme = match ? decodeURIComponent(match[1]) : 'dark';
         var root = document.documentElement;
-        root.classList.remove('light');
-        if (theme === 'light') {
+        // Color theme (palette) — marketing uses whatever the user set in the app
+        var colorMatch = document.cookie.match(/(?:^|; )plannotator-color-theme=([^;]*)/);
+        var colorTheme = colorMatch ? decodeURIComponent(colorMatch[1]) : 'plannotator';
+        root.classList.add('theme-' + colorTheme);
+        // Mode (dark/light/system)
+        var modeMatch = document.cookie.match(/(?:^|; )plannotator-theme=([^;]*)/);
+        var mode = modeMatch ? decodeURIComponent(modeMatch[1]) : 'dark';
+        if (mode === 'light') {
           root.classList.add('light');
-        } else if (theme === 'system') {
+        } else if (mode === 'system') {
           if (window.matchMedia('(prefers-color-scheme: light)').matches) {
             root.classList.add('light');
           }

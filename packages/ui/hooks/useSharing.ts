@@ -122,7 +122,7 @@ export function useSharing(
         if (payload) {
           setMarkdown(payload.p);
 
-          const restoredAnnotations = fromShareable(payload.a);
+          const restoredAnnotations = fromShareable(payload.a, payload.d);
           setAnnotations(restoredAnnotations);
 
           if (payload.g?.length) {
@@ -156,7 +156,7 @@ export function useSharing(
         setMarkdown(payload.p);
 
         // Convert shareable annotations to full annotations
-        const restoredAnnotations = fromShareable(payload.a);
+        const restoredAnnotations = fromShareable(payload.a, payload.d);
         setAnnotations(restoredAnnotations);
 
         // Restore global attachments if present
@@ -308,7 +308,7 @@ export function useSharing(
       const planTitle = titleLine ? titleLine.replace(/^#+\s*/, '').trim() : 'Unknown Plan';
 
       // Convert to full annotations
-      const importedAnnotations = fromShareable(payload.a);
+      const importedAnnotations = fromShareable(payload.a, payload.d);
 
       if (importedAnnotations.length === 0) {
         return { success: true, count: 0, planTitle, error: 'No annotations found in share link' };

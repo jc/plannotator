@@ -15,6 +15,7 @@ const DEBOUNCE_MS = 500;
 interface DraftData {
   a: unknown[];
   g?: unknown[];
+  d?: (string | null)[];
   ts: number;
 }
 
@@ -88,9 +89,12 @@ export function useAnnotationDraft({
     if (timerRef.current) clearTimeout(timerRef.current);
 
     timerRef.current = setTimeout(() => {
+      const diffContexts = annotations.map(a => a.diffContext || null);
+      const hasDiffContexts = diffContexts.some(v => v !== null);
       const payload: DraftData = {
         a: toShareable(annotations) as unknown[],
         g: toShareableImages(globalAttachments) as unknown[] | undefined,
+        ...(hasDiffContexts ? { d: diffContexts } : {}),
         ts: Date.now(),
       };
 
@@ -115,7 +119,7 @@ export function useAnnotationDraft({
 
     if (!data?.a) return { annotations: [], globalAttachments: [] };
 
-    const restored = fromShareable(data.a as Parameters<typeof fromShareable>[0]);
+    const restored = fromShareable(data.a as Parameters<typeof fromShareable>[0], data.d);
     const restoredGlobal = data.g ? (parseShareableImages(data.g as Parameters<typeof parseShareableImages>[0]) ?? []) : [];
 
     return { annotations: restored, globalAttachments: restoredGlobal };

@@ -49,6 +49,7 @@ import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
 import { registerSession, unregisterSession, listSessions } from "@plannotator/server/sessions";
 import { openBrowser } from "@plannotator/server/browser";
 import { detectProjectName } from "@plannotator/server/project";
+import { planDenyFeedback } from "@plannotator/shared/feedback-templates";
 import path from "path";
 
 // Embed the built HTML at compile time
@@ -183,7 +184,12 @@ if (args[0] === "sessions") {
   server.stop();
 
   // Output feedback (captured by slash command)
-  console.log(result.feedback || "No feedback provided.");
+  if (result.approved) {
+    console.log("Code review completed — no changes requested.");
+  } else {
+    console.log(result.feedback);
+    console.log("\nThe reviewer has identified issues above. You must address all of them.");
+  }
   process.exit(0);
 
 } else if (args[0] === "annotate") {
@@ -364,7 +370,7 @@ if (args[0] === "sessions") {
           hookEventName: "PermissionRequest",
           decision: {
             behavior: "deny",
-            message: `YOUR PLAN WAS NOT APPROVED. You MUST revise the plan to address ALL of the feedback below before calling ExitPlanMode again. Do not resubmit the same plan — use the Edit tool to make targeted changes to the plan file first.\n\n${result.feedback || "Plan changes requested"}`,
+            message: planDenyFeedback(result.feedback || "", "ExitPlanMode"),
           },
         },
       })

@@ -1,4 +1,5 @@
 import { Block, type Annotation, type EditorAnnotation, type ImageAttachment } from '../types';
+import { planDenyFeedback } from '@plannotator/shared/feedback-templates';
 
 /**
  * Parsed YAML frontmatter as key-value pairs.
@@ -243,6 +244,10 @@ export const parseMarkdownToBlocks = (markdown: string): Block[] => {
   return blocks;
 };
 
+/** Wrap feedback output with the deny preamble for pasting into agent sessions */
+export const wrapFeedbackForAgent = (feedback: string): string =>
+  planDenyFeedback(feedback);
+
 export const exportAnnotations = (blocks: Block[], annotations: any[], globalAttachments: ImageAttachment[] = []): string => {
   if (annotations.length === 0 && globalAttachments.length === 0) {
     return 'No changes detected.';
@@ -276,6 +281,11 @@ export const exportAnnotations = (blocks: Block[], annotations: any[], globalAtt
     const block = blocks.find(b => b.id === ann.blockId);
 
     output += `## ${index + 1}. `;
+
+    // Add diff context label if annotation was created in diff view
+    if (ann.diffContext) {
+      output += `[In diff content] `;
+    }
 
     switch (ann.type) {
       case 'DELETION':

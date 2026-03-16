@@ -3,6 +3,7 @@ import { FileDiff } from '@pierre/diffs/react';
 import { getSingularPatch, processFile } from '@pierre/diffs';
 import { CodeAnnotation, CodeAnnotationType, SelectedLineRange, DiffAnnotationMetadata } from '@plannotator/ui/types';
 import { useTheme } from '@plannotator/ui/components/ThemeProvider';
+import { CommentPopover } from '@plannotator/ui/components/CommentPopover';
 import { detectLanguage } from '../utils/detectLanguage';
 import { useAnnotationToolbar } from '../hooks/useAnnotationToolbar';
 import { FileHeader } from './FileHeader';
@@ -21,6 +22,7 @@ interface DiffViewerProps {
   pendingSelection: SelectedLineRange | null;
   onLineSelection: (range: SelectedLineRange | null) => void;
   onAddAnnotation: (type: CodeAnnotationType, text?: string, suggestedCode?: string, originalCode?: string) => void;
+  onAddFileComment: (text: string) => void;
   onEditAnnotation: (id: string, text?: string, suggestedCode?: string, originalCode?: string) => void;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
@@ -53,6 +55,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   pendingSelection,
   onLineSelection,
   onAddAnnotation,
+  onAddFileComment,
   onEditAnnotation,
   onSelectAnnotation,
   onDeleteAnnotation,
@@ -74,8 +77,9 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   canStage = false,
   stageError,
 }) => {
-  const { theme } = useTheme();
+  const { theme, colorTheme, resolvedMode } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
+  const [fileCommentAnchor, setFileCommentAnchor] = useState<HTMLElement | null>(null);
 
   const toolbar = useAnnotationToolbar({ patch, filePath, onLineSelection, onAddAnnotation, onEditAnnotation });
 
@@ -144,18 +148,20 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
 
   // Map annotations to @pierre/diffs format
   const lineAnnotations = useMemo(() => {
-    return annotations.map(ann => ({
-      side: ann.side === 'new' ? 'additions' as const : 'deletions' as const,
-      lineNumber: ann.lineEnd,
-      metadata: {
-        annotationId: ann.id,
-        type: ann.type,
-        text: ann.text,
-        suggestedCode: ann.suggestedCode,
-        originalCode: ann.originalCode,
-        author: ann.author,
-      } as DiffAnnotationMetadata,
-    }));
+    return annotations
+      .filter(ann => (ann.scope ?? 'line') === 'line')
+      .map(ann => ({
+        side: ann.side === 'new' ? 'additions' as const : 'deletions' as const,
+        lineNumber: ann.lineEnd,
+        metadata: {
+          annotationId: ann.id,
+          type: ann.type,
+          text: ann.text,
+          suggestedCode: ann.suggestedCode,
+          originalCode: ann.originalCode,
+          author: ann.author,
+        } as DiffAnnotationMetadata,
+      }));
   }, [annotations]);
 
   // Handle edit: find annotation and start editing in toolbar
@@ -201,13 +207,36 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
     );
   }, [toolbar.handleLineSelectionEnd]);
 
-  // Determine theme for @pierre/diffs
-  const pierreTheme = useMemo(() => {
-    const effectiveTheme = theme === 'system'
-      ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
-      : theme;
-    return effectiveTheme === 'light' ? 'pierre-light' : 'pierre-dark';
-  }, [theme]);
+  // Inject resolved colors into @pierre/diffs shadow DOM.
+  // CSS custom properties don't cross the shadow boundary, so we read computed
+  // values and pass them via unsafeCSS. Single state object avoids split renders.
+  const [pierreTheme, setPierreTheme] = useState<{ type: 'dark' | 'light'; css: string }>({ type: 'dark', css: '' });
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      const styles = getComputedStyle(document.documentElement);
+      const bg = styles.getPropertyValue('--background').trim();
+      const fg = styles.getPropertyValue('--foreground').trim();
+      const muted = styles.getPropertyValue('--muted').trim();
+      if (!bg || !fg) return;
+      setPierreTheme({
+        type: resolvedMode,
+        css: `
+          :host, [data-diff], [data-file], [data-diffs-header], [data-error-wrapper], [data-virtualizer-buffer] {
+            --diffs-bg: ${bg} !important;
+            --diffs-fg: ${fg} !important;
+            --diffs-dark-bg: ${bg};
+            --diffs-light-bg: ${bg};
+            --diffs-dark: ${fg};
+            --diffs-light: ${fg};
+          }
+          pre, code { background-color: ${bg} !important; }
+          [data-file-info] { background-color: ${muted} !important; }
+          [data-column-number] { background-color: ${bg} !important; }
+        `,
+      });
+    });
+  }, [resolvedMode, colorTheme]);
 
   return (
     <div ref={containerRef} className="h-full overflow-auto relative" onMouseMove={toolbar.handleMouseMove}>
@@ -230,6 +259,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         onStage={onStage}
         canStage={canStage}
         stageError={stageError}
+        onFileComment={setFileCommentAnchor}
       />
 
       <div className="p-4">
@@ -237,8 +267,8 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
           key={filePath}
           fileDiff={augmentedDiff}
           options={{
-            theme: pierreTheme,
-            themeType: 'dark',
+            themeType: pierreTheme.type,
+            unsafeCSS: pierreTheme.css,
             diffStyle,
             diffIndicators: 'bars',
             hunkSeparators: 'line-info',
@@ -281,6 +311,19 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
           modalLayout={toolbar.modalLayout}
           setModalLayout={toolbar.setModalLayout}
           onClose={() => toolbar.setShowCodeModal(false)}
+        />
+      )}
+
+      {fileCommentAnchor && (
+        <CommentPopover
+          anchorEl={fileCommentAnchor}
+          contextText={filePath.split('/').pop() || filePath}
+          isGlobal={false}
+          onSubmit={(text) => {
+            onAddFileComment(text);
+            setFileCommentAnchor(null);
+          }}
+          onClose={() => setFileCommentAnchor(null)}
         />
       )}
     </div>

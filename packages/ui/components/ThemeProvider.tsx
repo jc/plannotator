@@ -1,76 +1,128 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { storage } from '../utils/storage';
+import { BUILT_IN_THEMES, type ThemeInfo } from '../utils/themeRegistry';
 
-type Theme = 'dark' | 'light' | 'system';
+export type Mode = 'dark' | 'light' | 'system';
 
 type ThemeProviderState = {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
+  // Mode (dark/light/system) — backward-compatible with old "theme" API
+  theme: Mode;
+  setTheme: (mode: Mode) => void;
+  mode: Mode;
+  setMode: (mode: Mode) => void;
+  resolvedMode: 'dark' | 'light';
+  // Color theme (palette)
+  colorTheme: string;
+  setColorTheme: (theme: string) => void;
+  availableThemes: ThemeInfo[];
 };
 
 const ThemeProviderContext = createContext<ThemeProviderState>({
   theme: 'dark',
   setTheme: () => null,
+  mode: 'dark',
+  setMode: () => null,
+  resolvedMode: 'dark',
+  colorTheme: 'plannotator',
+  setColorTheme: () => null,
+  availableThemes: BUILT_IN_THEMES,
 });
+
+/** Resolve the class string for a theme + mode combination */
+function resolveThemeClasses(themeId: string, effectiveMode: 'dark' | 'light'): string {
+  const themeInfo = BUILT_IN_THEMES.find(t => t.id === themeId);
+  const modeSupport = themeInfo?.modeSupport ?? 'both';
+
+  let applyLight = effectiveMode === 'light';
+  if (modeSupport === 'dark-only') applyLight = false;
+  if (modeSupport === 'light-only') applyLight = true;
+
+  return `theme-${themeId}${applyLight ? ' light' : ''}`;
+}
+
+/** Read system preference synchronously */
+function getSystemIsLight(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches;
+}
 
 interface ThemeProviderProps {
   children: React.ReactNode;
-  defaultTheme?: Theme;
+  defaultTheme?: Mode;
+  defaultColorTheme?: string;
   storageKey?: string;
+  colorThemeStorageKey?: string;
 }
 
 export function ThemeProvider({
   children,
   defaultTheme = 'dark',
+  defaultColorTheme = 'plannotator',
   storageKey = 'plannotator-theme',
+  colorThemeStorageKey = 'plannotator-color-theme',
 }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(
-    () => (storage.getItem(storageKey) as Theme) || defaultTheme
+  const [mode, setModeState] = useState<Mode>(
+    () => (storage.getItem(storageKey) as Mode) || defaultTheme
   );
 
-  useEffect(() => {
-    const root = window.document.documentElement;
+  const [colorTheme, setColorThemeState] = useState<string>(
+    () => storage.getItem(colorThemeStorageKey) || defaultColorTheme
+  );
 
-    // Remove light class (dark is default, no class needed)
-    root.classList.remove('light');
+  const [systemIsLight, setSystemIsLight] = useState(getSystemIsLight);
 
-    let effectiveTheme = theme;
-    if (theme === 'system') {
-      effectiveTheme = window.matchMedia('(prefers-color-scheme: light)').matches
-        ? 'light'
-        : 'dark';
+  // Compute resolved mode once — consumers use this instead of re-querying matchMedia
+  const resolvedMode: 'dark' | 'light' = mode === 'system' ? (systemIsLight ? 'light' : 'dark') : mode;
+
+  // [P3 fix] Apply theme class synchronously during initialization to prevent
+  // flash of unstyled content. CSS tokens live under .theme-* selectors, so
+  // without this the first frame has no valid --background/--foreground.
+  if (typeof window !== 'undefined') {
+    const targetClass = resolveThemeClasses(colorTheme, resolvedMode);
+    if (window.document.documentElement.className !== targetClass) {
+      window.document.documentElement.className = targetClass;
     }
+  }
 
-    // Only add 'light' class when in light mode
-    if (effectiveTheme === 'light') {
-      root.classList.add('light');
-    }
-  }, [theme]);
-
-  // Listen for system theme changes
+  // Keep class in sync after state changes
   useEffect(() => {
-    if (theme !== 'system') return;
+    window.document.documentElement.className = resolveThemeClasses(colorTheme, resolvedMode);
+  }, [resolvedMode, colorTheme]);
+
+  // [P2 fix] Listen for system theme changes AND re-read current value when
+  // entering system mode (OS may have changed while pinned to explicit mode)
+  useEffect(() => {
+    if (mode !== 'system') return;
+
+    // Sync immediately — OS preference may have changed since we last checked
+    setSystemIsLight(getSystemIsLight());
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
-    const handleChange = () => {
-      const root = window.document.documentElement;
-      root.classList.remove('light');
-      if (mediaQuery.matches) {
-        root.classList.add('light');
-      }
-    };
+    const handleChange = () => setSystemIsLight(mediaQuery.matches);
 
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
-  }, [theme]);
+  }, [mode]);
 
-  const value = {
-    theme,
-    setTheme: (newTheme: Theme) => {
-      storage.setItem(storageKey, newTheme);
-      setTheme(newTheme);
-    },
-  };
+  const setMode = useCallback((newMode: Mode) => {
+    storage.setItem(storageKey, newMode);
+    setModeState(newMode);
+  }, [storageKey]);
+
+  const setColorTheme = useCallback((newTheme: string) => {
+    storage.setItem(colorThemeStorageKey, newTheme);
+    setColorThemeState(newTheme);
+  }, [colorThemeStorageKey]);
+
+  const value = useMemo<ThemeProviderState>(() => ({
+    theme: mode,
+    setTheme: setMode,
+    mode,
+    setMode,
+    resolvedMode,
+    colorTheme,
+    setColorTheme,
+    availableThemes: BUILT_IN_THEMES,
+  }), [mode, resolvedMode, colorTheme, setMode, setColorTheme]);
 
   return (
     <ThemeProviderContext.Provider value={value}>

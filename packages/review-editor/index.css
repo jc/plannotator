@@ -6,154 +6,35 @@
 @source "./*.tsx";
 @source "./components/**/*.tsx";
 
-:root {
-  --background: oklch(0.15 0.02 260);
-  --foreground: oklch(0.90 0.01 260);
-  --card: oklch(0.22 0.02 260);
-  --card-foreground: oklch(0.90 0.01 260);
-  --popover: oklch(0.28 0.025 260);
-  --popover-foreground: oklch(0.90 0.01 260);
-  --primary: oklch(0.75 0.18 280);
-  --primary-foreground: oklch(0.15 0.02 260);
-  --secondary: oklch(0.65 0.15 180);
-  --secondary-foreground: oklch(0.15 0.02 260);
-  --muted: oklch(0.26 0.02 260);
-  --muted-foreground: oklch(0.72 0.02 260);
-  --accent: oklch(0.70 0.20 60);
-  --accent-foreground: oklch(0.15 0.02 260);
-  --destructive: oklch(0.65 0.20 25);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.35 0.02 260);
-  --input: oklch(0.26 0.02 260);
-  --ring: oklch(0.75 0.18 280);
-  --success: oklch(0.72 0.17 150);
-  --success-foreground: oklch(0.15 0.02 260);
-  --warning: oklch(0.75 0.15 85);
-  --warning-foreground: oklch(0.20 0.02 260);
-
-  --font-sans: 'Inter', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-  --radius: 0.75rem;
-}
-
-.light {
-  --background: oklch(0.97 0.005 260);
-  --foreground: oklch(0.18 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.02 260);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.18 0.02 260);
-  --primary: oklch(0.50 0.25 280);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.50 0.18 180);
-  --secondary-foreground: oklch(1 0 0);
-  --muted: oklch(0.92 0.01 260);
-  --muted-foreground: oklch(0.40 0.02 260);
-  --accent: oklch(0.60 0.22 50);
-  --accent-foreground: oklch(0.18 0.02 260);
-  --destructive: oklch(0.50 0.25 25);
-  --destructive-foreground: oklch(1 0 0);
-  --border: oklch(0.88 0.01 260);
-  --input: oklch(0.92 0.01 260);
-  --ring: oklch(0.50 0.25 280);
-  --success: oklch(0.45 0.20 150);
-  --success-foreground: oklch(1 0 0);
-  --warning: oklch(0.55 0.18 85);
-  --warning-foreground: oklch(0.18 0.02 260);
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-success: var(--success);
-  --color-success-foreground: var(--success-foreground);
-  --color-warning: var(--warning);
-  --color-warning-foreground: var(--warning-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-}
-
-* {
-  border-color: var(--border);
-}
-
-body {
-  font-family: var(--font-sans);
-  background: var(--background);
-  color: var(--foreground);
-  font-feature-settings: "ss01", "ss02", "cv01";
-}
-
-/* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
-
-/* Selection */
-::selection {
-  background: oklch(0.75 0.18 280 / 0.3);
-}
-
-/* Smooth transitions */
-* {
-  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-  transition-duration: 150ms;
-}
-
-/* Focus states */
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
+@import "../ui/theme.css";
 
 /* =====================================================
    Code Review Specific Styles
    ===================================================== */
 
-/* @pierre/diffs theme integration */
+/* @pierre/diffs theme integration — pass plannotator theme colors into shadow DOM */
 diffs-container {
-  --pierre-bg: var(--background);
-  --pierre-fg: var(--foreground);
+  --diffs-dark-bg: var(--background);
+  --diffs-light-bg: var(--background);
+  --diffs-dark: var(--foreground);
+  --diffs-light: var(--foreground);
 }
 
 /* Diff line backgrounds - synchronized with plannotator colors */
 .diff-line-addition {
-  background: oklch(0.72 0.17 150 / 0.12);
+  background: oklch(from var(--success) l c h / 0.12);
 }
 
 .diff-line-deletion {
-  background: oklch(0.65 0.20 25 / 0.12);
+  background: oklch(from var(--destructive) l c h / 0.12);
 }
 
 .light .diff-line-addition {
-  background: oklch(0.72 0.17 150 / 0.15);
+  background: oklch(from var(--success) l c h / 0.15);
 }
 
 .light .diff-line-deletion {
-  background: oklch(0.65 0.20 25 / 0.15);
+  background: oklch(from var(--destructive) l c h / 0.15);
 }
 
 /* Review comment thread styling */
@@ -230,7 +111,7 @@ diffs-container {
 
 .review-comment-action.destructive:hover {
   color: var(--destructive);
-  background: oklch(0.65 0.20 25 / 0.1);
+  background: oklch(from var(--destructive) l c h / 0.1);
 }
 
 .review-comment-body {
@@ -253,7 +134,7 @@ diffs-container {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1.5;
-  background: oklch(0.13 0.015 260);
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0.5rem 0.75rem;
@@ -269,12 +150,12 @@ diffs-container {
 
 .light .review-comment-body .inline-code-block,
 .light .review-comment-markdown .inline-code-block {
-  background: oklch(0.96 0.005 260);
+  background: var(--code-bg);
 }
 
 /* Line selection highlight */
 .line-selected {
-  background: oklch(0.75 0.18 280 / 0.15) !important;
+  background: oklch(from var(--primary) l c h / 0.15) !important;
 }
 
 /* Hover utility button (GitHub-style +) */
@@ -540,7 +421,7 @@ diffs-container {
   font-size: 0.6875rem;
   line-height: 1.6;
   color: var(--foreground);
-  background: oklch(0.13 0.015 260);
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0.625rem 0.75rem;
@@ -559,16 +440,16 @@ diffs-container {
 .suggested-code-input:focus {
   outline: none;
   border-color: var(--success);
-  box-shadow: 0 0 0 1px oklch(0.72 0.17 150 / 0.3);
+  box-shadow: 0 0 0 1px oklch(from var(--success) l c h / 0.3);
 }
 
 .light .suggested-code-input {
-  background: oklch(0.96 0.005 260);
+  background: var(--code-bg);
 }
 
 /* GitHub-style suggestion block */
 .suggestion-block {
-  border: 1px solid oklch(0.72 0.17 150 / 0.3);
+  border: 1px solid oklch(from var(--success) l c h / 0.3);
   border-left: 3px solid var(--success);
   border-radius: var(--radius-sm);
   overflow: hidden;
@@ -584,15 +465,15 @@ diffs-container {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--success);
-  background: oklch(0.72 0.17 150 / 0.08);
-  border-bottom: 1px solid oklch(0.72 0.17 150 / 0.15);
+  background: oklch(from var(--success) l c h / 0.08);
+  border-bottom: 1px solid oklch(from var(--success) l c h / 0.15);
 }
 
 .suggestion-block-code {
   margin: 0;
   font-size: 0.6875rem;
   line-height: 1.6;
-  background: oklch(0.13 0.015 260);
+  background: var(--code-bg);
   padding: 0.5rem 0.75rem;
   overflow-x: auto;
 }
@@ -609,23 +490,23 @@ diffs-container {
 }
 
 .light .suggestion-block-code {
-  background: oklch(0.97 0.005 260);
+  background: var(--code-bg);
 }
 
 .light .suggestion-block {
-  border-color: oklch(0.45 0.20 150 / 0.3);
+  border-color: oklch(from var(--success) l c h / 0.3);
   border-left-color: var(--success);
 }
 
 .light .suggestion-block-header {
-  background: oklch(0.45 0.20 150 / 0.06);
-  border-bottom-color: oklch(0.45 0.20 150 / 0.12);
+  background: oklch(from var(--success) l c h / 0.06);
+  border-bottom-color: oklch(from var(--success) l c h / 0.12);
 }
 
 /* Suggestion modal original code pane */
 .suggestion-modal-original {
   font-family: var(--font-mono);
-  background: oklch(0.13 0.015 260);
+  background: var(--code-bg);
 }
 
 .suggestion-modal-original code {
@@ -635,7 +516,7 @@ diffs-container {
 }
 
 .light .suggestion-modal-original {
-  background: oklch(0.97 0.005 260);
+  background: var(--code-bg);
 }
 
 /* Suggestion diff (original vs suggested) */
@@ -658,11 +539,11 @@ diffs-container {
 }
 
 .suggestion-diff-line.removed {
-  background: oklch(0.65 0.20 25 / 0.15);
+  background: oklch(from var(--destructive) l c h / 0.15);
 }
 
 .suggestion-diff-line.added {
-  background: oklch(0.72 0.17 150 / 0.15);
+  background: oklch(from var(--success) l c h / 0.15);
 }
 
 .suggestion-diff-indicator {
@@ -673,11 +554,11 @@ diffs-container {
 }
 
 .suggestion-diff-line.removed .suggestion-diff-indicator {
-  color: oklch(0.65 0.20 25);
+  color: var(--destructive);
 }
 
 .suggestion-diff-line.added .suggestion-diff-indicator {
-  color: oklch(0.72 0.17 150);
+  color: var(--success);
 }
 
 .suggestion-diff-content {
@@ -685,11 +566,11 @@ diffs-container {
 }
 
 .light .suggestion-diff-line.removed {
-  background: oklch(0.65 0.20 25 / 0.1);
+  background: oklch(from var(--destructive) l c h / 0.1);
 }
 
 .light .suggestion-diff-line.added {
-  background: oklch(0.45 0.20 150 / 0.1);
+  background: oklch(from var(--success) l c h / 0.1);
 }
 
 /* Toast animations */

@@ -1,6 +1,6 @@
 {
   "name": "@plannotator/pi-extension",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "description": "Plannotator extension for Pi coding agent - interactive plan review with visual annotation",
   "author": "backnotprop",
@@ -21,13 +21,15 @@
   "files": [
     "index.ts",
     "server.ts",
+    "review-core.ts",
     "utils.ts",
     "README.md",
     "plannotator.html",
-    "review-editor.html"
+    "review-editor.html",
+    "feedback-templates.ts"
   ],
   "scripts": {
-    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html",
+    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html && cp ../../packages/shared/feedback-templates.ts feedback-templates.ts && cp ../../packages/shared/review-core.ts review-core.ts",
     "prepublishOnly": "cd ../.. && bun run build:pi"
   },
   "peerDependencies": {
