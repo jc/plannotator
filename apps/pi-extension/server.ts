@@ -7,10 +7,10 @@
  */
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, basename, resolve as resolvePath } from "node:path";
 import { Readable } from "node:stream";
 import {
@@ -25,7 +25,25 @@ import {
   gitResetFile as gitResetFileCore,
   parseWorktreeDiffType,
   runGitDiff as runGitDiffCore,
+  validateFilePath,
 } from "./review-core.js";
+import {
+  applyCheckpointAction,
+  buildDeltaPatch,
+  buildNoChangesPatch,
+  buildSnapshotMeta,
+  ensureSnapshotRecord,
+  getCheckpointForFile,
+  getDiffFileKey,
+  getFileRevisionStrip,
+  getReviewState,
+  parseDiffToCurrentFiles,
+  resolveFileRevisionSnapshot,
+  type CurrentDiffFile,
+  type FileCheckpointAction,
+  type FileViewMode,
+  type ReviewSnapshotMeta,
+} from "./review-state-core.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -740,484 +758,6 @@ export function runGitDiff(
   return runGitDiffCore(reviewRuntime, diffType, defaultBranch);
 }
 
-type FileReviewStatus = "unreviewed" | "reviewed" | "needs-rereview" | "skipped";
-type FileCheckpointAction = "mark-reviewed" | "skip" | "reset";
-type FileViewMode = "full" | "delta";
-
-interface ReviewSnapshotMeta {
-  snapshotId: string;
-  diffType: string;
-  gitRef: string;
-  baseId: string;
-  headId: string;
-  createdAt: string;
-}
-
-interface CurrentDiffFile {
-  filePath: string;
-  oldPath?: string;
-  patch: string;
-  patchHash: string;
-}
-
-interface ReviewCheckpoint {
-  reviewerId: string;
-  scope: string;
-  filePath: string;
-  oldPath?: string;
-  status: "reviewed" | "skipped";
-  snapshotId: string;
-  patchHash: string;
-  baselineNewContent?: string | null;
-  updatedAt: string;
-}
-
-interface CheckpointStore {
-  checkpoints: Record<string, ReviewCheckpoint>;
-}
-
-interface PersistedSnapshotFile {
-  filePath: string;
-  oldPath?: string;
-  patchHash: string;
-  baselineNewContent: string | null;
-}
-
-interface PersistedSnapshot extends ReviewSnapshotMeta {
-  files: PersistedSnapshotFile[];
-}
-
-interface SnapshotStore {
-  snapshots: Record<string, PersistedSnapshot>;
-}
-
-function hashString(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function hashPatch(patch: string): string {
-  return `h_${hashString(patch).slice(0, 12)}`;
-}
-
-function buildSnapshotMeta(rawPatch: string, diffType: DiffType, gitRef: string): ReviewSnapshotMeta {
-  const sourceHash = hashString(`${diffType}\n${gitRef}\n${rawPatch}`);
-  const indexMatches = Array.from(rawPatch.matchAll(/^index ([0-9a-f]+)\.\.([0-9a-f]+)/gm));
-  const baseSeed = indexMatches.length > 0 ? indexMatches.map((m) => m[1]).join("|") : `${sourceHash}:base`;
-  const headSeed = indexMatches.length > 0 ? indexMatches.map((m) => m[2]).join("|") : `${sourceHash}:head`;
-
-  return {
-    snapshotId: `rev_${sourceHash.slice(0, 12)}`,
-    diffType,
-    gitRef,
-    baseId: hashString(baseSeed).slice(0, 12),
-    headId: hashString(headSeed).slice(0, 12),
-    createdAt: new Date().toISOString(),
-  };
-}
-
-function getScope(snapshot: ReviewSnapshotMeta): string {
-  return `${snapshot.diffType}::${snapshot.gitRef}`;
-}
-
-function getDiffFileKey(filePath: string, oldPath?: string): string {
-  return `${oldPath || ""}::${filePath}`;
-}
-
-function parseDiffToCurrentFiles(rawPatch: string): CurrentDiffFile[] {
-  const files: CurrentDiffFile[] = [];
-  const fileChunks = rawPatch.split(/^diff --git /m).filter(Boolean);
-
-  for (const chunk of fileChunks) {
-    const lines = chunk.split("\n");
-    const headerMatch = lines[0]?.match(/^a\/(.+) b\/(.+)$/);
-    if (!headerMatch) continue;
-
-    const oldPath = headerMatch[1];
-    const newPath = headerMatch[2];
-    const patch = `diff --git ${chunk}`;
-
-    files.push({
-      filePath: newPath,
-      oldPath: oldPath !== newPath ? oldPath : undefined,
-      patch,
-      patchHash: hashPatch(patch),
-    });
-  }
-
-  return files;
-}
-
-function reviewStateDir(project: string): string {
-  const safeProject = project.replace(/[^a-zA-Z0-9._-]/g, "_") || "default";
-  const dir = join(os.homedir(), ".plannotator", "review-state", safeProject);
-  mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function readSnapshotStore(project: string): SnapshotStore {
-  const path = join(reviewStateDir(project), "pi-snapshots.json");
-  if (!existsSync(path)) return { snapshots: {} };
-
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<SnapshotStore>;
-    if (!parsed || typeof parsed !== "object" || !parsed.snapshots || typeof parsed.snapshots !== "object") {
-      throw new Error("Invalid snapshot store shape");
-    }
-    return { snapshots: parsed.snapshots as Record<string, PersistedSnapshot> };
-  } catch {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const corruptPath = `${path}.corrupt-${stamp}.json`;
-    try {
-      copyFileSync(path, corruptPath);
-    } catch {
-      // Ignore copy errors.
-    }
-    writeFileSync(path, JSON.stringify({ snapshots: {} }, null, 2), "utf-8");
-    return { snapshots: {} };
-  }
-}
-
-function writeSnapshotStore(project: string, store: SnapshotStore): void {
-  const path = join(reviewStateDir(project), "pi-snapshots.json");
-  writeFileSync(path, JSON.stringify(store, null, 2), "utf-8");
-}
-
-function readCheckpointStore(project: string): CheckpointStore {
-  const path = join(reviewStateDir(project), "pi-checkpoints.json");
-  if (!existsSync(path)) return { checkpoints: {} };
-
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<CheckpointStore>;
-    if (!parsed || typeof parsed !== "object" || !parsed.checkpoints || typeof parsed.checkpoints !== "object") {
-      throw new Error("Invalid checkpoint store shape");
-    }
-    return { checkpoints: parsed.checkpoints as Record<string, ReviewCheckpoint> };
-  } catch {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const corruptPath = `${path}.corrupt-${stamp}.json`;
-    try {
-      copyFileSync(path, corruptPath);
-    } catch {
-      // Ignore copy errors.
-    }
-    writeFileSync(path, JSON.stringify({ checkpoints: {} }, null, 2), "utf-8");
-    return { checkpoints: {} };
-  }
-}
-
-function writeCheckpointStore(project: string, store: CheckpointStore): void {
-  const path = join(reviewStateDir(project), "pi-checkpoints.json");
-  writeFileSync(path, JSON.stringify(store, null, 2), "utf-8");
-}
-
-function checkpointKey(reviewerId: string, scope: string, filePath: string, oldPath?: string): string {
-  return `${reviewerId}::${scope}::${getDiffFileKey(filePath, oldPath)}`;
-}
-
-function findCheckpoint(
-  store: CheckpointStore,
-  reviewerId: string,
-  scope: string,
-  filePath: string,
-  oldPath?: string,
-): ReviewCheckpoint | undefined {
-  const exact = checkpointKey(reviewerId, scope, filePath, oldPath);
-  if (store.checkpoints[exact]) return store.checkpoints[exact];
-
-  if (!oldPath) {
-    const prefix = `${reviewerId}::${scope}::`;
-    let latest: ReviewCheckpoint | undefined;
-
-    for (const [key, cp] of Object.entries(store.checkpoints)) {
-      if (!key.startsWith(prefix)) continue;
-      if (cp.filePath !== filePath) continue;
-      if (!latest || cp.updatedAt > latest.updatedAt) latest = cp;
-    }
-
-    return latest;
-  }
-
-  return undefined;
-}
-
-function findSnapshotFile(snapshot: PersistedSnapshot, filePath: string, oldPath?: string): PersistedSnapshotFile | undefined {
-  if (oldPath) {
-    return snapshot.files.find((file) => file.filePath === filePath && file.oldPath === oldPath);
-  }
-  return snapshot.files.find((file) => file.filePath === filePath);
-}
-
-function ensureSnapshotRecord(
-  project: string,
-  snapshot: ReviewSnapshotMeta,
-  files: Array<CurrentDiffFile & { baselineNewContent: string | null }>,
-): void {
-  const store = readSnapshotStore(project);
-  if (store.snapshots[snapshot.snapshotId]) return;
-
-  store.snapshots[snapshot.snapshotId] = {
-    ...snapshot,
-    files: files.map((file) => ({
-      filePath: file.filePath,
-      oldPath: file.oldPath,
-      patchHash: file.patchHash,
-      baselineNewContent: file.baselineNewContent,
-    })),
-  };
-
-  writeSnapshotStore(project, store);
-}
-
-function resolveFileRevisionSnapshot(
-  project: string,
-  currentSnapshot: ReviewSnapshotMeta,
-  filePath: string,
-  oldPath: string | undefined,
-  floorSnapshotId: string,
-): { snapshot: PersistedSnapshot; file: PersistedSnapshotFile } | null {
-  const store = readSnapshotStore(project);
-  const snapshot = store.snapshots[floorSnapshotId];
-  if (!snapshot) return null;
-  if (getScope(snapshot) !== getScope(currentSnapshot)) return null;
-
-  const file = findSnapshotFile(snapshot, filePath, oldPath);
-  if (!file) return null;
-
-  return { snapshot, file };
-}
-
-function getFileRevisionStrip(
-  project: string,
-  reviewerId: string,
-  snapshot: ReviewSnapshotMeta,
-  filePath: string,
-  oldPath?: string,
-): {
-  snapshot: ReviewSnapshotMeta;
-  filePath: string;
-  oldPath?: string;
-  headSnapshotId: string;
-  reviewedSnapshotId?: string;
-  defaultFloorSnapshotId?: string;
-  cells: Array<{ snapshotId: string; patchHash: string; createdAt: string; order: number }>;
-} {
-  const scope = getScope(snapshot);
-  const snapshotStore = readSnapshotStore(project);
-  const checkpointStore = readCheckpointStore(project);
-
-  const scoped = Object.values(snapshotStore.snapshots)
-    .filter((candidate) => getScope(candidate) === scope)
-    .sort((a, b) => {
-      if (a.createdAt === b.createdAt) return a.snapshotId.localeCompare(b.snapshotId);
-      return a.createdAt.localeCompare(b.createdAt);
-    });
-
-  const cellsRaw: Array<{ snapshotId: string; patchHash: string; createdAt: string; order: number }> = [];
-
-  for (const scopedSnapshot of scoped) {
-    const file = findSnapshotFile(scopedSnapshot, filePath, oldPath);
-    if (!file) continue;
-
-    const previous = cellsRaw[cellsRaw.length - 1];
-    if (previous && previous.patchHash === file.patchHash) continue;
-
-    cellsRaw.push({
-      snapshotId: scopedSnapshot.snapshotId,
-      patchHash: file.patchHash,
-      createdAt: scopedSnapshot.createdAt,
-      order: cellsRaw.length,
-    });
-  }
-
-  const currentIndex = cellsRaw.findIndex((cell) => cell.snapshotId === snapshot.snapshotId);
-  if (currentIndex >= 0 && currentIndex !== cellsRaw.length - 1) {
-    const [currentCell] = cellsRaw.splice(currentIndex, 1);
-    cellsRaw.push(currentCell);
-  }
-
-  const checkpoint = findCheckpoint(checkpointStore, reviewerId, scope, filePath, oldPath);
-
-  let reviewedSnapshotId: string | undefined;
-  if (checkpoint && checkpoint.status === "reviewed") {
-    const direct = cellsRaw.find((cell) => cell.snapshotId === checkpoint.snapshotId);
-    if (direct) {
-      reviewedSnapshotId = direct.snapshotId;
-    } else {
-      for (let i = cellsRaw.length - 1; i >= 0; i -= 1) {
-        if (cellsRaw[i].patchHash === checkpoint.patchHash) {
-          reviewedSnapshotId = cellsRaw[i].snapshotId;
-          break;
-        }
-      }
-    }
-  }
-
-  const headSnapshotId = cellsRaw[cellsRaw.length - 1]?.snapshotId || snapshot.snapshotId;
-
-  return {
-    snapshot,
-    filePath,
-    ...(oldPath ? { oldPath } : {}),
-    headSnapshotId,
-    ...(reviewedSnapshotId ? { reviewedSnapshotId } : {}),
-    ...(reviewedSnapshotId ? { defaultFloorSnapshotId: reviewedSnapshotId } : {}),
-    defaultCeilingSnapshotId: headSnapshotId,
-    cells: cellsRaw,
-  };
-}
-
-function buildNoChangesPatch(filePath: string, currentNewContent: string | null): string {
-  const diffGitLeft = `a/${filePath}`;
-  const diffGitRight = `b/${filePath}`;
-  const oldLabel = currentNewContent === null ? "/dev/null" : diffGitLeft;
-  const newLabel = currentNewContent === null ? "/dev/null" : diffGitRight;
-  return `diff --git ${diffGitLeft} ${diffGitRight}\n--- ${oldLabel}\n+++ ${newLabel}\n`;
-}
-
-function deriveFileStatus(file: CurrentDiffFile, checkpoint?: ReviewCheckpoint): { status: FileReviewStatus; deltaAvailable: boolean; lastCheckpointAt?: string } {
-  if (!checkpoint) {
-    return { status: "unreviewed", deltaAvailable: false };
-  }
-
-  if (checkpoint.status === "skipped") {
-    return { status: "skipped", deltaAvailable: false, lastCheckpointAt: checkpoint.updatedAt };
-  }
-
-  if (checkpoint.patchHash === file.patchHash) {
-    return { status: "reviewed", deltaAvailable: false, lastCheckpointAt: checkpoint.updatedAt };
-  }
-
-  return {
-    status: "needs-rereview",
-    deltaAvailable: Object.prototype.hasOwnProperty.call(checkpoint, "baselineNewContent"),
-    lastCheckpointAt: checkpoint.updatedAt,
-  };
-}
-
-function validateFilePath(filePath: string): void {
-  if (!filePath || filePath.includes("..") || filePath.startsWith("/") || filePath.includes("\\")) {
-    throw new Error("Invalid file path");
-  }
-}
-
-function gitShow(ref: string, path: string): string | null {
-  try {
-    return execFileSync("git", ["show", `${ref}:${path}`], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch {
-    return null;
-  }
-}
-
-function readWorkingTree(path: string): string | null {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return null;
-  }
-}
-
-function getFileContentsForDiff(diffType: DiffType, defaultBranch: string, filePath: string, oldPath?: string): { oldContent: string | null; newContent: string | null } {
-  const oldFilePath = oldPath || filePath;
-
-  switch (diffType) {
-    case "uncommitted":
-      return {
-        oldContent: gitShow("HEAD", oldFilePath),
-        newContent: readWorkingTree(filePath),
-      };
-    case "staged":
-      return {
-        oldContent: gitShow("HEAD", oldFilePath),
-        newContent: gitShow(":0", filePath),
-      };
-    case "unstaged":
-      return {
-        oldContent: gitShow(":0", oldFilePath),
-        newContent: readWorkingTree(filePath),
-      };
-    case "last-commit":
-      return {
-        oldContent: gitShow("HEAD~1", oldFilePath),
-        newContent: gitShow("HEAD", filePath),
-      };
-    case "branch":
-      return {
-        oldContent: gitShow(defaultBranch, oldFilePath),
-        newContent: gitShow("HEAD", filePath),
-      };
-    default:
-      return { oldContent: null, newContent: null };
-  }
-}
-
-function buildDeltaPatch(filePath: string, baselineNewContent: string | null, currentNewContent: string | null): string {
-  if (baselineNewContent === currentNewContent) {
-    return "";
-  }
-
-  const tempDir = mkdtempSync(join(os.tmpdir(), "plannotator-pi-delta-"));
-  try {
-    const diffGitLeft = `a/${filePath}`;
-    const diffGitRight = `b/${filePath}`;
-    const oldLabel = baselineNewContent === null ? "/dev/null" : diffGitLeft;
-    const newLabel = currentNewContent === null ? "/dev/null" : diffGitRight;
-
-    const oldPath = join(tempDir, "old.txt");
-    const newPath = join(tempDir, "new.txt");
-
-    if (baselineNewContent !== null) {
-      writeFileSync(oldPath, baselineNewContent, "utf-8");
-    }
-    if (currentNewContent !== null) {
-      writeFileSync(newPath, currentNewContent, "utf-8");
-    }
-
-    const oldArg = baselineNewContent === null ? "/dev/null" : oldPath;
-    const newArg = currentNewContent === null ? "/dev/null" : newPath;
-
-    let patch = "";
-    try {
-      patch = execFileSync("git", [
-        "diff",
-        "--no-index",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        oldArg,
-        newArg,
-      ], {
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (err) {
-      const stdout = (err as { stdout?: string | Buffer }).stdout;
-      if (typeof stdout === "string") {
-        patch = stdout;
-      } else if (stdout && Buffer.isBuffer(stdout)) {
-        patch = stdout.toString("utf-8");
-      }
-    }
-
-    if (!patch) return "";
-
-    const normalized = patch
-      .split("\n")
-      .map((line) => {
-        if (line.startsWith("diff --git ")) return `diff --git ${diffGitLeft} ${diffGitRight}`;
-        if (line.startsWith("--- ")) return `--- ${oldLabel}`;
-        if (line.startsWith("+++ ")) return `+++ ${newLabel}`;
-        return line;
-      })
-      .join("\n");
-
-    return normalized;
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
-  }
-}
-
 export async function startReviewServer(options: {
   rawPatch: string;
   gitRef: string;
@@ -1255,27 +795,45 @@ export async function startReviewServer(options: {
     reviewContext = null;
   };
 
-  const getCurrentReviewContext = () => {
+  const getCurrentReviewContext = async () => {
     if (reviewContext) return reviewContext;
 
     const files = parseDiffToCurrentFiles(currentPatch);
-    const snapshot = buildSnapshotMeta(currentPatch, currentDiffType, currentGitRef);
+    const snapshot = buildSnapshotMeta({
+      rawPatch: currentPatch,
+      diffType: currentDiffType,
+      gitRef: currentGitRef,
+    });
     const defaultBranch = options.gitContext?.defaultBranch || "main";
 
-    const currentNewContentByKey = new Map<string, string | null>();
-    for (const file of files) {
-      const contents = getFileContentsForDiff(currentDiffType, defaultBranch, file.filePath, file.oldPath);
-      currentNewContentByKey.set(getDiffFileKey(file.filePath, file.oldPath), contents.newContent);
-    }
+    const fileContentPairs = await Promise.all(
+      files.map(async (file) => {
+        const contents = await getFileContentsForDiffCore(
+          reviewRuntime,
+          currentDiffType,
+          defaultBranch,
+          file.filePath,
+          file.oldPath,
+        );
 
-    ensureSnapshotRecord(
-      projectName,
-      snapshot,
-      files.map((file) => ({
-        ...file,
-        baselineNewContent: currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null,
-      })),
+        return [
+          getDiffFileKey(file.filePath, file.oldPath),
+          contents.newContent,
+        ] as const;
+      })
     );
+
+    const currentNewContentByKey = new Map<string, string | null>(fileContentPairs);
+
+    ensureSnapshotRecord({
+      project: projectName,
+      snapshot,
+      files: files.map((file) => ({
+        ...file,
+        baselineNewContent:
+          currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null,
+      })),
+    });
 
     reviewContext = { snapshot, files, currentNewContentByKey };
     return reviewContext;
@@ -1452,27 +1010,15 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const context = getCurrentReviewContext();
-      const checkpointStore = readCheckpointStore(projectName);
-      const scope = getScope(context.snapshot);
+      const context = await getCurrentReviewContext();
+      const state = getReviewState(
+        projectName,
+        reviewerId,
+        context.snapshot,
+        context.files,
+      );
 
-      const files = context.files.map((file) => {
-        const checkpoint = findCheckpoint(checkpointStore, reviewerId, scope, file.filePath, file.oldPath);
-        const derived = deriveFileStatus(file, checkpoint);
-        return {
-          filePath: file.filePath,
-          oldPath: file.oldPath,
-          status: derived.status,
-          patchHash: file.patchHash,
-          deltaAvailable: derived.deltaAvailable,
-          ...(derived.lastCheckpointAt ? { lastCheckpointAt: derived.lastCheckpointAt } : {}),
-        };
-      });
-
-      json(res, {
-        snapshot: context.snapshot,
-        files,
-      });
+      json(res, state);
     } else if (url.pathname === "/api/review/file-history" && req.method === "GET") {
       const reviewerId = url.searchParams.get("reviewerId")?.trim();
       const filePath = url.searchParams.get("filePath")?.trim();
@@ -1483,7 +1029,7 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const context = getCurrentReviewContext();
+      const context = await getCurrentReviewContext();
       const file = oldPath
         ? context.files.find((f) => f.filePath === filePath && f.oldPath === oldPath)
         : context.files.find((f) => f.filePath === filePath);
@@ -1493,7 +1039,13 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const strip = getFileRevisionStrip(projectName, reviewerId, context.snapshot, file.filePath, file.oldPath);
+      const strip = getFileRevisionStrip({
+        project: projectName,
+        reviewerId,
+        snapshot: context.snapshot,
+        filePath: file.filePath,
+        oldPath: file.oldPath,
+      });
       json(res, strip);
     } else if (url.pathname === "/api/review/checkpoint" && req.method === "POST") {
       const body = await parseBody(req);
@@ -1513,7 +1065,7 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const context = getCurrentReviewContext();
+      const context = await getCurrentReviewContext();
       const file = oldPath
         ? context.files.find((f) => f.filePath === filePath && f.oldPath === oldPath)
         : context.files.find((f) => f.filePath === filePath);
@@ -1523,75 +1075,50 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const store = readCheckpointStore(projectName);
-      const scope = getScope(context.snapshot);
-      const key = checkpointKey(reviewerId, scope, file.filePath, file.oldPath);
+      const fileKey = getDiffFileKey(file.filePath, file.oldPath);
+      const baselineNewContent =
+        context.currentNewContentByKey.get(fileKey) ?? null;
 
-      if (action === "reset") {
-        delete store.checkpoints[key];
-      } else if (action === "skip") {
-        store.checkpoints[key] = {
-          reviewerId,
-          scope,
+      let checkpointSnapshotId: string | undefined;
+      let checkpointPatchHash: string | undefined;
+      let checkpointBaselineNewContent: string | null | undefined;
+
+      if (action === "mark-reviewed" && throughSnapshotId) {
+        const floor = resolveFileRevisionSnapshot({
+          project: projectName,
+          snapshot: context.snapshot,
           filePath: file.filePath,
-          ...(file.oldPath ? { oldPath: file.oldPath } : {}),
-          status: "skipped",
-          snapshotId: context.snapshot.snapshotId,
-          patchHash: file.patchHash,
-          updatedAt: new Date().toISOString(),
-        };
-      } else {
-        let checkpointSnapshotId = context.snapshot.snapshotId;
-        let checkpointPatchHash = file.patchHash;
-        let checkpointBaselineNewContent =
-          context.currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null;
+          oldPath: file.oldPath,
+          floorSnapshotId: throughSnapshotId,
+        });
 
-        if (throughSnapshotId) {
-          const resolved = resolveFileRevisionSnapshot(
-            projectName,
-            context.snapshot,
-            file.filePath,
-            file.oldPath,
-            throughSnapshotId,
-          );
-
-          if (!resolved) {
-            json(res, { error: "throughSnapshotId not found for file" }, 400);
-            return;
-          }
-
-          checkpointSnapshotId = resolved.snapshot.snapshotId;
-          checkpointPatchHash = resolved.file.patchHash;
-          checkpointBaselineNewContent = resolved.file.baselineNewContent;
+        if (!floor) {
+          json(res, { error: "throughSnapshotId not found for file" }, 400);
+          return;
         }
 
-        store.checkpoints[key] = {
-          reviewerId,
-          scope,
-          filePath: file.filePath,
-          ...(file.oldPath ? { oldPath: file.oldPath } : {}),
-          status: "reviewed",
-          snapshotId: checkpointSnapshotId,
-          patchHash: checkpointPatchHash,
-          baselineNewContent: checkpointBaselineNewContent,
-          updatedAt: new Date().toISOString(),
-        };
+        checkpointSnapshotId = floor.snapshot.snapshotId;
+        checkpointPatchHash = floor.file.patchHash;
+        checkpointBaselineNewContent = floor.file.baselineNewContent;
       }
 
-      writeCheckpointStore(projectName, store);
-      const checkpoint = findCheckpoint(store, reviewerId, scope, file.filePath, file.oldPath);
-      const derived = deriveFileStatus(file, checkpoint);
+      const fileState = applyCheckpointAction({
+        project: projectName,
+        reviewerId,
+        filePath: file.filePath,
+        oldPath: file.oldPath,
+        action,
+        snapshot: context.snapshot,
+        currentFile: file,
+        baselineNewContent,
+        checkpointSnapshotId,
+        checkpointPatchHash,
+        checkpointBaselineNewContent,
+      });
 
       json(res, {
         snapshot: context.snapshot,
-        file: {
-          filePath: file.filePath,
-          oldPath: file.oldPath,
-          status: derived.status,
-          patchHash: file.patchHash,
-          deltaAvailable: derived.deltaAvailable,
-          ...(derived.lastCheckpointAt ? { lastCheckpointAt: derived.lastCheckpointAt } : {}),
-        },
+        file: fileState,
       });
     } else if (url.pathname === "/api/review/file-view" && req.method === "POST") {
       const body = await parseBody(req);
@@ -1612,7 +1139,7 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const context = getCurrentReviewContext();
+      const context = await getCurrentReviewContext();
       const file = oldPath
         ? context.files.find((f) => f.filePath === filePath && f.oldPath === oldPath)
         : context.files.find((f) => f.filePath === filePath);
@@ -1633,14 +1160,26 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const strip = getFileRevisionStrip(projectName, reviewerId, context.snapshot, file.filePath, file.oldPath);
+      const strip = getFileRevisionStrip({
+        project: projectName,
+        reviewerId,
+        snapshot: context.snapshot,
+        filePath: file.filePath,
+        oldPath: file.oldPath,
+      });
       const headSnapshotId = strip.headSnapshotId;
       let effectiveCeilingSnapshotId = ceilingSnapshotId || headSnapshotId;
       let effectiveFloorSnapshotId = floorSnapshotId;
 
       if (!effectiveFloorSnapshotId && !ceilingSnapshotId) {
-        const store = readCheckpointStore(projectName);
-        const checkpoint = findCheckpoint(store, reviewerId, getScope(context.snapshot), file.filePath, file.oldPath);
+        const checkpoint = getCheckpointForFile(
+          projectName,
+          reviewerId,
+          context.snapshot,
+          file.filePath,
+          file.oldPath,
+        );
+
         if (checkpoint?.status === "reviewed") {
           effectiveFloorSnapshotId = checkpoint.snapshotId;
         }
@@ -1677,13 +1216,13 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const resolvedCeiling = resolveFileRevisionSnapshot(
-        projectName,
-        context.snapshot,
-        file.filePath,
-        file.oldPath,
-        effectiveCeilingSnapshotId,
-      );
+      const resolvedCeiling = resolveFileRevisionSnapshot({
+        project: projectName,
+        snapshot: context.snapshot,
+        filePath: file.filePath,
+        oldPath: file.oldPath,
+        floorSnapshotId: effectiveCeilingSnapshotId,
+      });
 
       if (!resolvedCeiling) {
         json(res, {
@@ -1697,13 +1236,13 @@ export async function startReviewServer(options: {
       }
 
       const resolvedFloor = effectiveFloorSnapshotId
-        ? resolveFileRevisionSnapshot(
-            projectName,
-            context.snapshot,
-            file.filePath,
-            file.oldPath,
-            effectiveFloorSnapshotId,
-          )
+        ? resolveFileRevisionSnapshot({
+            project: projectName,
+            snapshot: context.snapshot,
+            filePath: file.filePath,
+            oldPath: file.oldPath,
+            floorSnapshotId: effectiveFloorSnapshotId,
+          })
         : null;
 
       if (effectiveFloorSnapshotId && !resolvedFloor) {
@@ -1712,7 +1251,13 @@ export async function startReviewServer(options: {
       }
 
       const defaultBranch = options.gitContext?.defaultBranch || "main";
-      const currentContents = getFileContentsForDiff(currentDiffType, defaultBranch, file.filePath, file.oldPath);
+      const currentContents = await getFileContentsForDiffCore(
+        reviewRuntime,
+        currentDiffType,
+        defaultBranch,
+        file.filePath,
+        file.oldPath,
+      );
       const floorContent = resolvedFloor ? resolvedFloor.file.baselineNewContent : currentContents.oldContent;
       const ceilingContent = resolvedCeiling.file.baselineNewContent;
 
@@ -1729,7 +1274,11 @@ export async function startReviewServer(options: {
         return;
       }
 
-      const deltaPatch = buildDeltaPatch(file.filePath, floorContent, ceilingContent);
+      const deltaPatch = buildDeltaPatch({
+        filePath: file.filePath,
+        baselineNewContent: floorContent,
+        currentNewContent: ceilingContent,
+      });
 
       if (!deltaPatch || !deltaPatch.includes("@@")) {
         json(res, {

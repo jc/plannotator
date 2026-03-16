@@ -7,6 +7,7 @@
     "./crypto": "./crypto.ts",
     "./feedback-templates": "./feedback-templates.ts",
     "./review-core": "./review-core.ts",
+    "./review-state-core": "./review-state-core.ts",
     "./types": "./types.ts"
   }
 }

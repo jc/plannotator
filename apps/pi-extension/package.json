@@ -22,6 +22,7 @@
     "index.ts",
     "server.ts",
     "review-core.ts",
+    "review-state-core.ts",
     "utils.ts",
     "README.md",
     "plannotator.html",
@@ -29,7 +30,7 @@
     "feedback-templates.ts"
   ],
   "scripts": {
-    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html && cp ../../packages/shared/feedback-templates.ts feedback-templates.ts && cp ../../packages/shared/review-core.ts review-core.ts",
+    "build": "cp ../hook/dist/index.html plannotator.html && cp ../hook/dist/review.html review-editor.html && cp ../../packages/shared/feedback-templates.ts feedback-templates.ts && cp ../../packages/shared/review-core.ts review-core.ts && cp ../../packages/shared/review-state-core.ts review-state-core.ts",
     "prepublishOnly": "cd ../.. && bun run build:pi"
   },
   "peerDependencies": {
