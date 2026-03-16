@@ -170,11 +170,11 @@ const ReviewApp: React.FC = () => {
   });
   const [isPanelOpen, setIsPanelOpen] = useState(true);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
-  const [reviewSnapshotId, setReviewSnapshotId] = useState<string | null>(null);
+  const [reviewStateVersion, setReviewStateVersion] = useState<string | null>(null);
   const [reviewStates, setReviewStates] = useState<Record<string, FileReviewState>>({});
   const [fileRevisionStrips, setFileRevisionStrips] = useState<Record<string, FileRevisionStripResponse>>({});
-  const [selectedFloorSnapshotIds, setSelectedFloorSnapshotIds] = useState<Record<string, string | null>>({});
-  const [selectedCeilingSnapshotIds, setSelectedCeilingSnapshotIds] = useState<Record<string, string | null>>({});
+  const [selectedFloorRevisionIds, setSelectedFloorRevisionIds] = useState<Record<string, string | null>>({});
+  const [selectedCeilingRevisionIds, setSelectedCeilingRevisionIds] = useState<Record<string, string | null>>({});
   const [filePatchOverrides, setFilePatchOverrides] = useState<Record<string, string>>({});
   const [isUpdatingReviewState, setIsUpdatingReviewState] = useState(false);
   const [origin, setOrigin] = useState<'opencode' | 'claude-code' | 'pi' | null>(null);
@@ -255,18 +255,18 @@ const ReviewApp: React.FC = () => {
         stateMap[key] = file;
       }
 
-      setReviewSnapshotId(data.snapshot.snapshotId);
+      setReviewStateVersion(data.snapshot.snapshotId);
       setReviewStates(stateMap);
       setFileRevisionStrips({});
-      setSelectedFloorSnapshotIds({});
-      setSelectedCeilingSnapshotIds({});
+      setSelectedFloorRevisionIds({});
+      setSelectedCeilingRevisionIds({});
       setFilePatchOverrides({});
     } catch {
-      setReviewSnapshotId(null);
+      setReviewStateVersion(null);
       setReviewStates({});
       setFileRevisionStrips({});
-      setSelectedFloorSnapshotIds({});
-      setSelectedCeilingSnapshotIds({});
+      setSelectedFloorRevisionIds({});
+      setSelectedCeilingRevisionIds({});
       setFilePatchOverrides({});
     }
   }, [identity]);
@@ -316,11 +316,11 @@ const ReviewApp: React.FC = () => {
           gitRef: 'demo',
         });
         setFiles(demoFiles);
-        setReviewSnapshotId(null);
+        setReviewStateVersion(null);
         setReviewStates({});
         setFileRevisionStrips({});
-        setSelectedFloorSnapshotIds({});
-        setSelectedCeilingSnapshotIds({});
+        setSelectedFloorRevisionIds({});
+        setSelectedCeilingRevisionIds({});
         setFilePatchOverrides({});
       })
       .finally(() => setIsLoading(false));
@@ -531,19 +531,19 @@ const ReviewApp: React.FC = () => {
 
       const data = await res.json() as FileRevisionStripResponse;
       const key = getFileKey(file.path, file.oldPath);
-      const validIds = new Set(data.cells.map(cell => cell.snapshotId));
+      const validIds = new Set(data.cells.map(cell => cell.revisionId));
 
       setFileRevisionStrips(prev => ({ ...prev, [key]: data }));
-      setSelectedFloorSnapshotIds(prev => {
+      setSelectedFloorRevisionIds(prev => {
         const existing = prev[key];
         if (existing && validIds.has(existing)) return prev;
         if (Object.prototype.hasOwnProperty.call(prev, key) && existing === null) return prev;
-        return { ...prev, [key]: data.defaultFloorSnapshotId || null };
+        return { ...prev, [key]: data.defaultFloorRevisionId || null };
       });
-      setSelectedCeilingSnapshotIds(prev => {
+      setSelectedCeilingRevisionIds(prev => {
         const existing = prev[key];
         if (existing && validIds.has(existing)) return prev;
-        return { ...prev, [key]: data.defaultCeilingSnapshotId || data.headSnapshotId };
+        return { ...prev, [key]: data.defaultCeilingRevisionId || data.headRevisionId };
       });
     } catch (err) {
       console.error('Failed to load file revision strip:', err);
@@ -552,12 +552,12 @@ const ReviewApp: React.FC = () => {
 
   const fetchFilePatchForRange = useCallback(async (
     file: DiffFile,
-    floorSnapshotId: string | null,
-    ceilingSnapshotId: string | null,
+    floorRevisionId: string | null,
+    ceilingRevisionId: string | null,
   ) => {
     const key = getFileKey(file.path, file.oldPath);
     const strip = getRevisionStripForFile(file);
-    const effectiveCeiling = ceilingSnapshotId || strip?.headSnapshotId || null;
+    const effectiveCeiling = ceilingRevisionId || strip?.headRevisionId || null;
 
     if (!origin || !effectiveCeiling) {
       setFilePatchOverrides(prev => {
@@ -568,7 +568,7 @@ const ReviewApp: React.FC = () => {
       return;
     }
 
-    if (!floorSnapshotId && strip && effectiveCeiling === strip.headSnapshotId) {
+    if (!floorRevisionId && strip && effectiveCeiling === strip.headRevisionId) {
       setFilePatchOverrides(prev => {
         const next = { ...prev };
         delete next[key];
@@ -586,8 +586,8 @@ const ReviewApp: React.FC = () => {
           filePath: file.path,
           oldPath: file.oldPath,
           viewMode: 'delta',
-          ...(floorSnapshotId ? { floorSnapshotId } : {}),
-          ...(effectiveCeiling ? { ceilingSnapshotId: effectiveCeiling } : {}),
+          ...(floorRevisionId ? { floorRevisionId } : {}),
+          ...(effectiveCeiling ? { ceilingRevisionId: effectiveCeiling } : {}),
         }),
       });
 
@@ -622,8 +622,8 @@ const ReviewApp: React.FC = () => {
     if (!strip) return;
 
     if (mode === 'full') {
-      setSelectedFloorSnapshotIds(prev => ({ ...prev, [key]: null }));
-      setSelectedCeilingSnapshotIds(prev => ({ ...prev, [key]: strip.headSnapshotId }));
+      setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: null }));
+      setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: strip.headRevisionId }));
       setFilePatchOverrides(prev => {
         const next = { ...prev };
         delete next[key];
@@ -632,58 +632,58 @@ const ReviewApp: React.FC = () => {
       return;
     }
 
-    const reviewedSnapshotId = strip.reviewedSnapshotId;
-    if (!reviewedSnapshotId) return;
+    const reviewedRevisionId = strip.reviewedRevisionId;
+    if (!reviewedRevisionId) return;
 
-    setSelectedFloorSnapshotIds(prev => ({ ...prev, [key]: reviewedSnapshotId }));
-    setSelectedCeilingSnapshotIds(prev => ({ ...prev, [key]: strip.headSnapshotId }));
-    await fetchFilePatchForRange(file, reviewedSnapshotId, strip.headSnapshotId);
+    setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: reviewedRevisionId }));
+    setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: strip.headRevisionId }));
+    await fetchFilePatchForRange(file, reviewedRevisionId, strip.headRevisionId);
   }, [fetchFilePatchForRange, getRevisionStripForFile]);
 
-  const handleSelectRevisionFloor = useCallback(async (file: DiffFile, floorSnapshotId: string | null) => {
+  const handleSelectRevisionFrom = useCallback(async (file: DiffFile, floorRevisionId: string | null) => {
     const key = getFileKey(file.path, file.oldPath);
     const strip = getRevisionStripForFile(file);
     if (!strip) return;
 
-    const orderMap = new Map(strip.cells.map((cell, index) => [cell.snapshotId, index]));
-    const currentCeiling = selectedCeilingSnapshotIds[key] || strip.headSnapshotId;
+    const orderMap = new Map(strip.cells.map((cell, index) => [cell.revisionId, index]));
+    const currentCeiling = selectedCeilingRevisionIds[key] || strip.headRevisionId;
     let nextCeiling = currentCeiling;
 
-    if (floorSnapshotId && (orderMap.get(floorSnapshotId) ?? -1) > (orderMap.get(currentCeiling) ?? -1)) {
-      nextCeiling = floorSnapshotId;
+    if (floorRevisionId && (orderMap.get(floorRevisionId) ?? -1) > (orderMap.get(currentCeiling) ?? -1)) {
+      nextCeiling = floorRevisionId;
     }
 
-    setSelectedFloorSnapshotIds(prev => ({ ...prev, [key]: floorSnapshotId }));
-    setSelectedCeilingSnapshotIds(prev => ({ ...prev, [key]: nextCeiling }));
-    await fetchFilePatchForRange(file, floorSnapshotId, nextCeiling);
-  }, [fetchFilePatchForRange, getRevisionStripForFile, selectedCeilingSnapshotIds]);
+    setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: floorRevisionId }));
+    setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: nextCeiling }));
+    await fetchFilePatchForRange(file, floorRevisionId, nextCeiling);
+  }, [fetchFilePatchForRange, getRevisionStripForFile, selectedCeilingRevisionIds]);
 
-  const handleSelectRevisionCeiling = useCallback(async (file: DiffFile, ceilingSnapshotId: string) => {
+  const handleSelectRevisionTo = useCallback(async (file: DiffFile, ceilingRevisionId: string) => {
     const key = getFileKey(file.path, file.oldPath);
     const strip = getRevisionStripForFile(file);
     if (!strip) return;
 
-    const orderMap = new Map(strip.cells.map((cell, index) => [cell.snapshotId, index]));
-    const currentFloor = selectedFloorSnapshotIds[key] || null;
+    const orderMap = new Map(strip.cells.map((cell, index) => [cell.revisionId, index]));
+    const currentFloor = selectedFloorRevisionIds[key] || null;
     let nextFloor = currentFloor;
 
-    if (currentFloor && (orderMap.get(currentFloor) ?? -1) > (orderMap.get(ceilingSnapshotId) ?? -1)) {
-      nextFloor = ceilingSnapshotId;
+    if (currentFloor && (orderMap.get(currentFloor) ?? -1) > (orderMap.get(ceilingRevisionId) ?? -1)) {
+      nextFloor = ceilingRevisionId;
     }
 
-    setSelectedCeilingSnapshotIds(prev => ({ ...prev, [key]: ceilingSnapshotId }));
-    setSelectedFloorSnapshotIds(prev => ({ ...prev, [key]: nextFloor }));
-    await fetchFilePatchForRange(file, nextFloor, ceilingSnapshotId);
-  }, [fetchFilePatchForRange, getRevisionStripForFile, selectedFloorSnapshotIds]);
+    setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: ceilingRevisionId }));
+    setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: nextFloor }));
+    await fetchFilePatchForRange(file, nextFloor, ceilingRevisionId);
+  }, [fetchFilePatchForRange, getRevisionStripForFile, selectedFloorRevisionIds]);
 
   const handleCheckpointAction = useCallback(async (file: DiffFile, action: FileCheckpointAction) => {
     if (!origin) return;
 
     const key = getFileKey(file.path, file.oldPath);
     const strip = getRevisionStripForFile(file);
-    const selectedCeilingSnapshotId = selectedCeilingSnapshotIds[key] || strip?.headSnapshotId || null;
-    const throughSnapshotId = action === 'mark-reviewed'
-      ? selectedCeilingSnapshotId
+    const selectedCeilingRevisionId = selectedCeilingRevisionIds[key] || strip?.headRevisionId || null;
+    const throughRevisionId = action === 'mark-reviewed'
+      ? selectedCeilingRevisionId
       : undefined;
 
     setIsUpdatingReviewState(true);
@@ -696,7 +696,7 @@ const ReviewApp: React.FC = () => {
           filePath: file.path,
           oldPath: file.oldPath,
           action,
-          ...(throughSnapshotId ? { throughSnapshotId } : {}),
+          ...(throughRevisionId ? { throughRevisionId } : {}),
         }),
       });
 
@@ -711,7 +711,7 @@ const ReviewApp: React.FC = () => {
     } finally {
       setIsUpdatingReviewState(false);
     }
-  }, [fetchFileRevisionStrip, getRevisionStripForFile, identity, origin, refreshReviewStateForFiles, selectedCeilingSnapshotIds]);
+  }, [fetchFileRevisionStrip, getRevisionStripForFile, identity, origin, refreshReviewStateForFiles, selectedCeilingRevisionIds]);
 
   // Select annotation - switches file if needed and scrolls to it
   const handleSelectAnnotation = useCallback((id: string | null) => {
@@ -741,7 +741,7 @@ const ReviewApp: React.FC = () => {
     const active = files[activeFileIndex];
     if (!active || !origin) return;
     fetchFileRevisionStrip(active);
-  }, [activeFileIndex, files, origin, reviewSnapshotId, fetchFileRevisionStrip]);
+  }, [activeFileIndex, files, origin, reviewStateVersion, fetchFileRevisionStrip]);
 
   useEffect(() => {
     const active = files[activeFileIndex];
@@ -749,22 +749,22 @@ const ReviewApp: React.FC = () => {
 
     const key = getFileKey(active.path, active.oldPath);
     const strip = getRevisionStripForFile(active);
-    const selectedFloorSnapshotId = selectedFloorSnapshotIds[key] || null;
-    const selectedCeilingSnapshotId = selectedCeilingSnapshotIds[key] || strip?.headSnapshotId || null;
+    const selectedFloorRevisionId = selectedFloorRevisionIds[key] || null;
+    const selectedCeilingRevisionId = selectedCeilingRevisionIds[key] || strip?.headRevisionId || null;
 
-    if (!selectedCeilingSnapshotId) {
+    if (!selectedCeilingRevisionId) {
       return;
     }
 
-    fetchFilePatchForRange(active, selectedFloorSnapshotId, selectedCeilingSnapshotId);
+    fetchFilePatchForRange(active, selectedFloorRevisionId, selectedCeilingRevisionId);
   }, [
     activeFileIndex,
     files,
-    selectedFloorSnapshotIds,
-    selectedCeilingSnapshotIds,
+    selectedFloorRevisionIds,
+    selectedCeilingRevisionIds,
     fetchFilePatchForRange,
     getRevisionStripForFile,
-    reviewSnapshotId,
+    reviewStateVersion,
   ]);
 
   // Copy raw diff to clipboard
@@ -803,14 +803,14 @@ const ReviewApp: React.FC = () => {
   const activeFileKey = activeFile ? getFileKey(activeFile.path, activeFile.oldPath) : null;
   const activeFileReviewState = activeFile ? getReviewStateForFile(activeFile) : undefined;
   const activeFileRevisionStrip = activeFile ? getRevisionStripForFile(activeFile) : undefined;
-  const activeSelectedFloorSnapshotId = activeFileKey
-    ? (selectedFloorSnapshotIds[activeFileKey] || null)
+  const activeSelectedFloorRevisionId = activeFileKey
+    ? (selectedFloorRevisionIds[activeFileKey] || null)
     : null;
-  const activeSelectedCeilingSnapshotId = activeFileKey
-    ? (selectedCeilingSnapshotIds[activeFileKey] || activeFileRevisionStrip?.headSnapshotId || null)
+  const activeSelectedCeilingRevisionId = activeFileKey
+    ? (selectedCeilingRevisionIds[activeFileKey] || activeFileRevisionStrip?.headRevisionId || null)
     : null;
-  const isFullRange = !activeSelectedFloorSnapshotId
-    && (!activeFileRevisionStrip || activeSelectedCeilingSnapshotId === activeFileRevisionStrip.headSnapshotId);
+  const isFullRange = !activeSelectedFloorRevisionId
+    && (!activeFileRevisionStrip || activeSelectedCeilingRevisionId === activeFileRevisionStrip.headRevisionId);
   const activeFileViewMode: FileViewMode = isFullRange ? 'full' : 'delta';
   const activePatch = activeFileKey && filePatchOverrides[activeFileKey]
     ? filePatchOverrides[activeFileKey]
@@ -1196,10 +1196,10 @@ const ReviewApp: React.FC = () => {
                 viewMode={activeFileViewMode}
                 deltaAvailable={activeFileReviewState?.deltaAvailable || false}
                 revisionStrip={activeFileRevisionStrip}
-                selectedFloorSnapshotId={activeSelectedFloorSnapshotId}
-                selectedCeilingSnapshotId={activeSelectedCeilingSnapshotId}
-                onSelectFloorSnapshot={origin ? (snapshotId) => handleSelectRevisionFloor(activeFile, snapshotId) : undefined}
-                onSelectCeilingSnapshot={origin ? (snapshotId) => handleSelectRevisionCeiling(activeFile, snapshotId) : undefined}
+                selectedFloorRevisionId={activeSelectedFloorRevisionId}
+                selectedCeilingRevisionId={activeSelectedCeilingRevisionId}
+                onSelectFloorRevision={origin ? (revisionId) => handleSelectRevisionFrom(activeFile, revisionId) : undefined}
+                onSelectCeilingRevision={origin ? (revisionId) => handleSelectRevisionTo(activeFile, revisionId) : undefined}
                 onSetViewMode={origin ? (mode) => handleSetFileViewMode(activeFile, mode) : undefined}
                 onCheckpointAction={origin ? (action) => handleCheckpointAction(activeFile, action) : undefined}
                 isUpdatingReviewState={isUpdatingReviewState}

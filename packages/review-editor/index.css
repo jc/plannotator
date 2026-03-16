@@ -310,6 +310,11 @@ diffs-container {
   cursor: not-allowed;
 }
 
+.review-strip-all-spacer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .review-strip-cells {
   display: flex;
   align-items: center;

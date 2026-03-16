@@ -30,10 +30,10 @@ interface DiffViewerProps {
   viewMode: FileViewMode;
   deltaAvailable: boolean;
   revisionStrip?: FileRevisionStripResponse;
-  selectedFloorSnapshotId?: string | null;
-  selectedCeilingSnapshotId?: string | null;
-  onSelectFloorSnapshot?: (snapshotId: string | null) => void;
-  onSelectCeilingSnapshot?: (snapshotId: string) => void;
+  selectedFloorRevisionId?: string | null;
+  selectedCeilingRevisionId?: string | null;
+  onSelectFloorRevision?: (revisionId: string | null) => void;
+  onSelectCeilingRevision?: (revisionId: string) => void;
   onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
@@ -63,10 +63,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   viewMode,
   deltaAvailable,
   revisionStrip,
-  selectedFloorSnapshotId,
-  selectedCeilingSnapshotId,
-  onSelectFloorSnapshot,
-  onSelectCeilingSnapshot,
+  selectedFloorRevisionId,
+  selectedCeilingRevisionId,
+  onSelectFloorRevision,
+  onSelectCeilingRevision,
   onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
@@ -247,10 +247,10 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         viewMode={viewMode}
         deltaAvailable={deltaAvailable}
         revisionStrip={revisionStrip}
-        selectedFloorSnapshotId={selectedFloorSnapshotId}
-        selectedCeilingSnapshotId={selectedCeilingSnapshotId}
-        onSelectFloorSnapshot={onSelectFloorSnapshot}
-        onSelectCeilingSnapshot={onSelectCeilingSnapshot}
+        selectedFloorRevisionId={selectedFloorRevisionId}
+        selectedCeilingRevisionId={selectedCeilingRevisionId}
+        onSelectFloorRevision={onSelectFloorRevision}
+        onSelectCeilingRevision={onSelectCeilingRevision}
         onSetViewMode={onSetViewMode}
         onCheckpointAction={onCheckpointAction}
         isUpdatingReviewState={isUpdatingReviewState}

@@ -13,10 +13,10 @@ interface FileHeaderProps {
   viewMode: FileViewMode;
   deltaAvailable: boolean;
   revisionStrip?: FileRevisionStripResponse;
-  selectedFloorSnapshotId?: string | null;
-  selectedCeilingSnapshotId?: string | null;
-  onSelectFloorSnapshot?: (snapshotId: string | null) => void;
-  onSelectCeilingSnapshot?: (snapshotId: string) => void;
+  selectedFloorRevisionId?: string | null;
+  selectedCeilingRevisionId?: string | null;
+  onSelectFloorRevision?: (revisionId: string | null) => void;
+  onSelectCeilingRevision?: (revisionId: string) => void;
   onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
@@ -43,10 +43,10 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   viewMode,
   deltaAvailable,
   revisionStrip,
-  selectedFloorSnapshotId = null,
-  selectedCeilingSnapshotId = null,
-  onSelectFloorSnapshot,
-  onSelectCeilingSnapshot,
+  selectedFloorRevisionId = null,
+  selectedCeilingRevisionId = null,
+  onSelectFloorRevision,
+  onSelectCeilingRevision,
   onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
@@ -60,24 +60,29 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   const [copied, setCopied] = useState(false);
   const fileCommentRef = useRef<HTMLButtonElement>(null);
 
-  const reviewedSnapshotId = revisionStrip?.reviewedSnapshotId;
-  const headSnapshotId = revisionStrip?.headSnapshotId;
-  const canReviewFromCheckpoint = !!reviewedSnapshotId;
+  const reviewedRevisionId = revisionStrip?.reviewedRevisionId;
+  const headRevisionId = revisionStrip?.headRevisionId;
+  const canReviewFromCheckpoint = !!reviewedRevisionId;
+
+  const cellTitle = (cell: NonNullable<typeof revisionStrip>["cells"][number], side: "From" | "To"): string => {
+    const revisionLabel = cell.label || cell.revisionId.slice(0, 8);
+    return `${side} ${revisionLabel} · ${new Date(cell.createdAt).toLocaleString()}`;
+  };
 
   return (
     <div className="sticky top-0 z-10 px-4 py-2 bg-card/95 backdrop-blur border-b border-border flex items-center justify-between gap-4">
       <div className="min-w-0 space-y-1">
-        <div className="font-mono text-sm text-foreground truncate">{filePath}</div>
+        <div className="font-mono text-sm leading-tight text-foreground break-all whitespace-normal">{filePath}</div>
 
-        {revisionStrip && revisionStrip.cells.length > 0 && onSelectFloorSnapshot && (
+        {revisionStrip && revisionStrip.cells.length > 0 && onSelectFloorRevision && (
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 w-8">From</span>
 
               <button
-                onClick={() => onSelectFloorSnapshot(null)}
+                onClick={() => onSelectFloorRevision(null)}
                 disabled={isUpdatingReviewState}
-                className={`review-strip-all ${selectedFloorSnapshotId ? '' : 'selected'} ${isUpdatingReviewState ? 'disabled' : ''}`}
+                className={`review-strip-all ${selectedFloorRevisionId ? '' : 'selected'} ${isUpdatingReviewState ? 'disabled' : ''}`}
                 title="Use base/full floor"
               >
                 Base
@@ -85,13 +90,13 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
 
               <div className="review-strip-cells">
                 {revisionStrip.cells.map((cell) => {
-                  const isSelected = selectedFloorSnapshotId === cell.snapshotId;
-                  const isReviewed = cell.snapshotId === reviewedSnapshotId;
+                  const isSelected = selectedFloorRevisionId === cell.revisionId;
+                  const isReviewed = cell.revisionId === reviewedRevisionId;
 
                   return (
                     <button
-                      key={`floor-${cell.snapshotId}`}
-                      onClick={() => onSelectFloorSnapshot(cell.snapshotId)}
+                      key={`floor-${cell.revisionId}`}
+                      onClick={() => onSelectFloorRevision(cell.revisionId)}
                       disabled={isUpdatingReviewState}
                       className={`review-strip-cell ${
                         isSelected ? 'selected' : ''
@@ -100,7 +105,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
                       } ${
                         isUpdatingReviewState ? 'disabled' : ''
                       }`}
-                      title={`Floor r${cell.order + 1} · ${new Date(cell.createdAt).toLocaleString()}`}
+                      title={cellTitle(cell, 'From')}
                     >
                       <span className="review-strip-cell-dot" />
                     </button>
@@ -112,17 +117,21 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70 w-8">To</span>
 
+              <span className="review-strip-all review-strip-all-spacer" aria-hidden="true">
+                Base
+              </span>
+
               <div className="review-strip-cells">
                 {revisionStrip.cells.map((cell) => {
-                  const isSelected = selectedCeilingSnapshotId === cell.snapshotId;
-                  const isHead = cell.snapshotId === headSnapshotId;
-                  const isReviewed = cell.snapshotId === reviewedSnapshotId;
+                  const isSelected = selectedCeilingRevisionId === cell.revisionId;
+                  const isHead = cell.revisionId === headRevisionId;
+                  const isReviewed = cell.revisionId === reviewedRevisionId;
 
                   return (
                     <button
-                      key={`ceiling-${cell.snapshotId}`}
-                      onClick={() => onSelectCeilingSnapshot?.(cell.snapshotId)}
-                      disabled={isUpdatingReviewState || !onSelectCeilingSnapshot}
+                      key={`ceiling-${cell.revisionId}`}
+                      onClick={() => onSelectCeilingRevision?.(cell.revisionId)}
+                      disabled={isUpdatingReviewState || !onSelectCeilingRevision}
                       className={`review-strip-cell ceiling ${
                         isSelected ? 'selected' : ''
                       } ${
@@ -132,7 +141,7 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
                       } ${
                         isUpdatingReviewState ? 'disabled' : ''
                       }`}
-                      title={`Ceiling r${cell.order + 1} · ${new Date(cell.createdAt).toLocaleString()}`}
+                      title={cellTitle(cell, 'To')}
                     >
                       <span className="review-strip-cell-dot" />
                     </button>

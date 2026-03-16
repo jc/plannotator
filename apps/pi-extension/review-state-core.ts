@@ -38,20 +38,22 @@ export interface ReviewStateResponse {
 }
 
 export interface FileRevisionCell {
-  snapshotId: string;
+  revisionId: string;
   patchHash: string;
   createdAt: string;
   order: number;
+  label?: string;
+  kind?: "commit" | "working-tree";
 }
 
 export interface FileRevisionStripResponse {
   snapshot: ReviewSnapshotMeta;
   filePath: string;
   oldPath?: string;
-  headSnapshotId: string;
-  reviewedSnapshotId?: string;
-  defaultFloorSnapshotId?: string;
-  defaultCeilingSnapshotId?: string;
+  headRevisionId: string;
+  reviewedRevisionId?: string;
+  defaultFloorRevisionId?: string;
+  defaultCeilingRevisionId?: string;
   cells: FileRevisionCell[];
 }
 
@@ -430,7 +432,7 @@ export function getFileRevisionStrip(input: {
     }
 
     rawCells.push({
-      snapshotId: scopedSnapshot.snapshotId,
+      revisionId: scopedSnapshot.snapshotId,
       patchHash: file.patchHash,
       createdAt: scopedSnapshot.createdAt,
       order: rawCells.length,
@@ -438,7 +440,7 @@ export function getFileRevisionStrip(input: {
     });
   }
 
-  const currentIndex = rawCells.findIndex((cell) => cell.snapshotId === snapshot.snapshotId);
+  const currentIndex = rawCells.findIndex((cell) => cell.revisionId === snapshot.snapshotId);
   if (currentIndex >= 0 && currentIndex !== rawCells.length - 1) {
     const [currentCell] = rawCells.splice(currentIndex, 1);
     rawCells.push(currentCell);
@@ -455,33 +457,33 @@ export function getFileRevisionStrip(input: {
     oldPath
   );
 
-  let reviewedSnapshotId: string | undefined;
+  let reviewedRevisionId: string | undefined;
   if (checkpoint && checkpoint.status === "reviewed") {
-    const direct = rawCells.find((cell) => cell.snapshotId === checkpoint.snapshotId);
+    const direct = rawCells.find((cell) => cell.revisionId === checkpoint.snapshotId);
     if (direct) {
-      reviewedSnapshotId = direct.snapshotId;
+      reviewedRevisionId = direct.revisionId;
     } else {
       for (let i = rawCells.length - 1; i >= 0; i -= 1) {
         if (rawCells[i].patchHash === checkpoint.patchHash) {
-          reviewedSnapshotId = rawCells[i].snapshotId;
+          reviewedRevisionId = rawCells[i].revisionId;
           break;
         }
       }
     }
   }
 
-  const defaultFloorSnapshotId = reviewedSnapshotId;
+  const defaultFloorRevisionId = reviewedRevisionId;
 
-  const headSnapshotId = headCell?.snapshotId || snapshot.snapshotId;
+  const headRevisionId = headCell?.revisionId || snapshot.snapshotId;
 
   return {
     snapshot,
     filePath,
     ...(oldPath ? { oldPath } : {}),
-    headSnapshotId,
-    ...(reviewedSnapshotId ? { reviewedSnapshotId } : {}),
-    ...(defaultFloorSnapshotId ? { defaultFloorSnapshotId } : {}),
-    defaultCeilingSnapshotId: headSnapshotId,
+    headRevisionId,
+    ...(reviewedRevisionId ? { reviewedRevisionId } : {}),
+    ...(defaultFloorRevisionId ? { defaultFloorRevisionId } : {}),
+    defaultCeilingRevisionId: headRevisionId,
     cells,
   };
 }
@@ -491,12 +493,12 @@ export function resolveFileRevisionSnapshot(input: {
   snapshot: ReviewSnapshotMeta;
   filePath: string;
   oldPath?: string;
-  floorSnapshotId: string;
+  floorRevisionId: string;
   rootDir?: string;
 }): { snapshot: PersistedSnapshot; file: PersistedSnapshotFile } | null {
-  const { project, snapshot, filePath, oldPath, floorSnapshotId, rootDir } = input;
+  const { project, snapshot, filePath, oldPath, floorRevisionId, rootDir } = input;
   const store = readSnapshotStore(project, { rootDir });
-  const scopedSnapshot = store.snapshots[floorSnapshotId];
+  const scopedSnapshot = store.snapshots[floorRevisionId];
 
   if (!scopedSnapshot) {
     return null;

@@ -9,6 +9,7 @@
  *   PLANNOTATOR_PORT   - Fixed port to use (default: random locally, 19432 for remote)
  */
 
+import { createHash } from "crypto";
 import { isRemoteSession, getServerPort } from "./remote";
 import { type DiffType, type GitContext, runGitDiff, getFileContentsForDiff, gitAddFile, gitResetFile, parseWorktreeDiffType, validateFilePath } from "./git";
 import { detectProjectName } from "./project";
@@ -21,16 +22,14 @@ import {
   ensureSnapshotRecord,
   getCheckpointForFile,
   getDiffFileKey,
-  getFileRevisionStrip,
   getReviewState,
   parseDiffToCurrentFiles,
-  resolveFileRevisionSnapshot,
   type CurrentDiffFile,
 } from "./review-state";
 import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
-import type { FileCheckpointAction, FileViewMode, ReviewSnapshotMeta } from "@plannotator/shared/types";
+import type { FileCheckpointAction, FileRevisionStripResponse, FileViewMode, ReviewSnapshotMeta } from "@plannotator/shared/types";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -189,6 +188,176 @@ export async function startReviewServer(
       return files.find((file) => file.filePath === filePath && file.oldPath === oldPath);
     }
     return files.find((file) => file.filePath === filePath);
+  };
+
+  type EffectiveDiffType = "uncommitted" | "staged" | "unstaged" | "last-commit" | "branch";
+  const WORKING_REVISION_PREFIX = "wt:";
+
+  const hashRevisionContent = (content: string | null): string => {
+    const payload = content === null ? "__NULL__" : content;
+    return `h_${createHash("sha256").update(payload).digest("hex").slice(0, 12)}`;
+  };
+
+  const getDiffExecutionContext = (): { cwd?: string; effectiveDiffType: EffectiveDiffType } => {
+    if (!currentDiffType.startsWith("worktree:")) {
+      return { effectiveDiffType: currentDiffType as EffectiveDiffType };
+    }
+
+    const parsed = parseWorktreeDiffType(currentDiffType);
+    if (!parsed) {
+      return { effectiveDiffType: "uncommitted" };
+    }
+
+    return { cwd: parsed.path, effectiveDiffType: parsed.subType as EffectiveDiffType };
+  };
+
+  const runGitCommand = async (args: string[], cwd?: string): Promise<{ stdout: string; exitCode: number }> => {
+    const proc = Bun.spawn(["git", ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+
+    return { stdout, exitCode };
+  };
+
+  const readContentAtRevision = async (
+    revisionId: string,
+    file: CurrentDiffFile,
+  ): Promise<string | null | undefined> => {
+    if (revisionId.startsWith(WORKING_REVISION_PREFIX)) {
+      const context = await getCurrentReviewContext();
+      return context.currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null;
+    }
+
+    const { cwd } = getDiffExecutionContext();
+
+    const showPath = async (path: string): Promise<string | null> => {
+      const result = await runGitCommand(["show", `${revisionId}:${path}`], cwd);
+      if (result.exitCode === 0) {
+        return result.stdout;
+      }
+      return null;
+    };
+
+    const direct = await showPath(file.filePath);
+    if (direct !== null) {
+      return direct;
+    }
+
+    if (file.oldPath && file.oldPath !== file.filePath) {
+      return showPath(file.oldPath);
+    }
+
+    return undefined;
+  };
+
+  const getWorkingRevisionLabel = (effectiveDiffType: EffectiveDiffType): string =>
+    effectiveDiffType === "staged" ? "Index" : "Working tree";
+
+  const buildCommitRevisionStrip = async (
+    reviewerId: string,
+    file: CurrentDiffFile,
+  ): Promise<FileRevisionStripResponse> => {
+    const context = await getCurrentReviewContext();
+    const { cwd, effectiveDiffType } = getDiffExecutionContext();
+    const defaultBranch = gitContext?.defaultBranch || "main";
+
+    const logArgs = ["log", "--follow", "--format=%H%x09%ct", "--reverse"];
+
+    if (effectiveDiffType === "branch") {
+      logArgs.push(`${defaultBranch}..HEAD`);
+    } else if (effectiveDiffType === "last-commit") {
+      const hasParent = await runGitCommand(["rev-parse", "--verify", "HEAD~1"], cwd);
+      if (hasParent.exitCode === 0) {
+        logArgs.push("HEAD~1..HEAD");
+      } else {
+        logArgs.push("--max-count=1", "HEAD");
+      }
+    } else {
+      logArgs.push("--max-count=30", "HEAD");
+    }
+
+    logArgs.push("--", file.filePath);
+
+    const history = await runGitCommand(logArgs, cwd);
+    const historyLines = history.exitCode === 0
+      ? history.stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+      : [];
+
+    const cells = [] as FileRevisionStripResponse["cells"];
+
+    for (const line of historyLines) {
+      const [commitId, epochRaw] = line.split("\t");
+      if (!commitId) continue;
+
+      const content = await readContentAtRevision(commitId, file);
+      if (content === undefined) continue;
+
+      const epoch = Number.parseInt(epochRaw || "", 10);
+      const createdAt = Number.isFinite(epoch)
+        ? new Date(epoch * 1000).toISOString()
+        : new Date().toISOString();
+
+      cells.push({
+        revisionId: commitId,
+        patchHash: hashRevisionContent(content),
+        createdAt,
+        order: cells.length,
+        label: commitId.slice(0, 8),
+        kind: "commit",
+      });
+    }
+
+    if (effectiveDiffType === "uncommitted" || effectiveDiffType === "staged" || effectiveDiffType === "unstaged") {
+      const workingRevisionId = `${WORKING_REVISION_PREFIX}${currentDiffType}`;
+      const currentContent =
+        context.currentNewContentByKey.get(getDiffFileKey(file.filePath, file.oldPath)) ?? null;
+
+      cells.push({
+        revisionId: workingRevisionId,
+        patchHash: hashRevisionContent(currentContent),
+        createdAt: new Date().toISOString(),
+        order: cells.length,
+        label: getWorkingRevisionLabel(effectiveDiffType),
+        kind: "working-tree",
+      });
+    }
+
+    const checkpoint = getCheckpointForFile(
+      projectName,
+      reviewerId,
+      context.snapshot,
+      file.filePath,
+      file.oldPath,
+    );
+
+    const headRevisionId = cells[cells.length - 1]?.revisionId || context.snapshot.snapshotId;
+
+    let reviewedRevisionId: string | undefined;
+    if (checkpoint?.status === "reviewed") {
+      if (cells.some((cell) => cell.revisionId === checkpoint.snapshotId)) {
+        reviewedRevisionId = checkpoint.snapshotId;
+      } else if (checkpoint.patchHash === file.patchHash) {
+        reviewedRevisionId = headRevisionId;
+      }
+    }
+
+    return {
+      snapshot: context.snapshot,
+      filePath: file.filePath,
+      ...(file.oldPath ? { oldPath: file.oldPath } : {}),
+      headRevisionId,
+      ...(reviewedRevisionId ? { reviewedRevisionId } : {}),
+      ...(reviewedRevisionId ? { defaultFloorRevisionId: reviewedRevisionId } : {}),
+      defaultCeilingRevisionId: headRevisionId,
+      cells,
+    };
   };
 
   // Decision promise
@@ -363,13 +532,7 @@ export async function startReviewServer(
                 return Response.json({ error: "File not found in current diff" }, { status: 404 });
               }
 
-              const strip = getFileRevisionStrip({
-                project: projectName,
-                reviewerId,
-                snapshot: context.snapshot,
-                filePath: currentFile.filePath,
-                oldPath: currentFile.oldPath,
-              });
+              const strip = await buildCommitRevisionStrip(reviewerId, currentFile);
 
               return Response.json(strip);
             } catch (err) {
@@ -385,7 +548,7 @@ export async function startReviewServer(
                 reviewerId?: string;
                 filePath?: string;
                 oldPath?: string;
-                throughSnapshotId?: string;
+                throughRevisionId?: string;
                 action?: FileCheckpointAction;
               };
 
@@ -413,26 +576,29 @@ export async function startReviewServer(
               const baselineNewContent =
                 context.currentNewContentByKey.get(fileKey) ?? null;
 
-              let checkpointSnapshotId: string | undefined;
+              let checkpointRevisionId: string | undefined;
               let checkpointPatchHash: string | undefined;
               let checkpointBaselineNewContent: string | null | undefined;
 
-              if (action === "mark-reviewed" && body.throughSnapshotId) {
-                const floor = resolveFileRevisionSnapshot({
-                  project: projectName,
-                  snapshot: context.snapshot,
-                  filePath: currentFile.filePath,
-                  oldPath: currentFile.oldPath,
-                  floorSnapshotId: body.throughSnapshotId,
-                });
+              if (action === "mark-reviewed" && body.throughRevisionId) {
+                const strip = await buildCommitRevisionStrip(reviewerId, currentFile);
+                const selected = strip.cells.find((cell) => cell.revisionId === body.throughRevisionId);
 
-                if (!floor) {
-                  return Response.json({ error: "throughSnapshotId not found for file" }, { status: 400 });
+                if (!selected) {
+                  return Response.json({ error: "throughRevisionId not found for file" }, { status: 400 });
                 }
 
-                checkpointSnapshotId = floor.snapshot.snapshotId;
-                checkpointPatchHash = floor.file.patchHash;
-                checkpointBaselineNewContent = floor.file.baselineNewContent;
+                const selectedContent = await readContentAtRevision(selected.revisionId, currentFile);
+                if (selectedContent === undefined) {
+                  return Response.json({ error: "throughRevisionId could not be resolved" }, { status: 400 });
+                }
+
+                checkpointRevisionId = selected.revisionId;
+                checkpointBaselineNewContent = selectedContent;
+                checkpointPatchHash =
+                  selected.revisionId === strip.headRevisionId
+                    ? currentFile.patchHash
+                    : selected.patchHash;
               }
 
               const fileState = applyCheckpointAction({
@@ -444,7 +610,7 @@ export async function startReviewServer(
                 snapshot: context.snapshot,
                 currentFile,
                 baselineNewContent,
-                checkpointSnapshotId,
+                checkpointSnapshotId: checkpointRevisionId,
                 checkpointPatchHash,
                 checkpointBaselineNewContent,
               });
@@ -467,16 +633,16 @@ export async function startReviewServer(
                 reviewerId?: string;
                 filePath?: string;
                 oldPath?: string;
-                floorSnapshotId?: string;
-                ceilingSnapshotId?: string;
+                floorRevisionId?: string;
+                ceilingRevisionId?: string;
                 viewMode?: FileViewMode;
               };
 
               const reviewerId = body.reviewerId?.trim();
               const filePath = body.filePath?.trim();
               const viewMode = body.viewMode;
-              const floorSnapshotId = body.floorSnapshotId?.trim();
-              const ceilingSnapshotId = body.ceilingSnapshotId?.trim();
+              const floorRevisionId = body.floorRevisionId?.trim();
+              const ceilingRevisionId = body.ceilingRevisionId?.trim();
 
               if (!reviewerId || !filePath) {
                 return Response.json({ error: "Missing reviewerId or filePath" }, { status: 400 });
@@ -503,20 +669,14 @@ export async function startReviewServer(
                 });
               }
 
-              const strip = getFileRevisionStrip({
-                project: projectName,
-                reviewerId,
-                snapshot: context.snapshot,
-                filePath: currentFile.filePath,
-                oldPath: currentFile.oldPath,
-              });
+              const strip = await buildCommitRevisionStrip(reviewerId, currentFile);
 
-              const headSnapshotId = strip.headSnapshotId;
-              let effectiveCeilingSnapshotId = ceilingSnapshotId || headSnapshotId;
+              const headRevisionId = strip.headRevisionId;
+              let effectiveCeilingRevisionId = ceilingRevisionId || headRevisionId;
 
-              let effectiveFloorSnapshotId = floorSnapshotId;
+              let effectiveFloorRevisionId = floorRevisionId;
 
-              if (!effectiveFloorSnapshotId && !ceilingSnapshotId) {
+              if (!effectiveFloorRevisionId && !ceilingRevisionId) {
                 const checkpoint = getCheckpointForFile(
                   projectName,
                   reviewerId,
@@ -525,29 +685,32 @@ export async function startReviewServer(
                   currentFile.oldPath,
                 );
 
-                if (checkpoint?.status === "reviewed") {
-                  effectiveFloorSnapshotId = checkpoint.snapshotId;
+                if (
+                  checkpoint?.status === "reviewed" &&
+                  strip.cells.some((cell) => cell.revisionId === checkpoint.snapshotId)
+                ) {
+                  effectiveFloorRevisionId = checkpoint.snapshotId;
                 }
               }
 
-              const orderMap = new Map(strip.cells.map((cell, index) => [cell.snapshotId, index]));
+              const orderMap = new Map(strip.cells.map((cell, index) => [cell.revisionId, index]));
 
-              if (ceilingSnapshotId && !orderMap.has(effectiveCeilingSnapshotId)) {
-                return Response.json({ error: "ceilingSnapshotId not found for file" }, { status: 400 });
+              if (ceilingRevisionId && !orderMap.has(effectiveCeilingRevisionId)) {
+                return Response.json({ error: "ceilingRevisionId not found for file" }, { status: 400 });
               }
 
-              if (effectiveFloorSnapshotId && !orderMap.has(effectiveFloorSnapshotId)) {
-                return Response.json({ error: "floorSnapshotId not found for file" }, { status: 400 });
+              if (effectiveFloorRevisionId && !orderMap.has(effectiveFloorRevisionId)) {
+                return Response.json({ error: "floorRevisionId not found for file" }, { status: 400 });
               }
 
-              const ceilingOrder = orderMap.get(effectiveCeilingSnapshotId) ?? strip.cells.length - 1;
-              const floorOrder = effectiveFloorSnapshotId ? (orderMap.get(effectiveFloorSnapshotId) ?? -1) : -1;
+              const ceilingOrder = orderMap.get(effectiveCeilingRevisionId) ?? strip.cells.length - 1;
+              const floorOrder = effectiveFloorRevisionId ? (orderMap.get(effectiveFloorRevisionId) ?? -1) : -1;
 
-              if (effectiveFloorSnapshotId && floorOrder > ceilingOrder) {
-                return Response.json({ error: "floorSnapshotId cannot be newer than ceilingSnapshotId" }, { status: 400 });
+              if (effectiveFloorRevisionId && floorOrder > ceilingOrder) {
+                return Response.json({ error: "floorRevisionId cannot be newer than ceilingRevisionId" }, { status: 400 });
               }
 
-              if (!effectiveFloorSnapshotId && effectiveCeilingSnapshotId === headSnapshotId && !ceilingSnapshotId && !floorSnapshotId) {
+              if (!effectiveFloorRevisionId && effectiveCeilingRevisionId === headRevisionId && !ceilingRevisionId && !floorRevisionId) {
                 return Response.json({
                   filePath: currentFile.filePath,
                   oldPath: currentFile.oldPath,
@@ -557,7 +720,6 @@ export async function startReviewServer(
                 });
               }
 
-              const fileKey = getDiffFileKey(currentFile.filePath, currentFile.oldPath);
               const currentContents = await getFileContentsForDiff(
                 currentDiffType,
                 gitContext?.defaultBranch || "main",
@@ -565,15 +727,8 @@ export async function startReviewServer(
                 currentFile.oldPath,
               );
 
-              const ceiling = resolveFileRevisionSnapshot({
-                project: projectName,
-                snapshot: context.snapshot,
-                filePath: currentFile.filePath,
-                oldPath: currentFile.oldPath,
-                floorSnapshotId: effectiveCeilingSnapshotId,
-              });
-
-              if (!ceiling) {
+              const ceilingContent = await readContentAtRevision(effectiveCeilingRevisionId, currentFile);
+              if (ceilingContent === undefined) {
                 return Response.json({
                   filePath: currentFile.filePath,
                   oldPath: currentFile.oldPath,
@@ -583,22 +738,14 @@ export async function startReviewServer(
                 });
               }
 
-              const floor = effectiveFloorSnapshotId
-                ? resolveFileRevisionSnapshot({
-                    project: projectName,
-                    snapshot: context.snapshot,
-                    filePath: currentFile.filePath,
-                    oldPath: currentFile.oldPath,
-                    floorSnapshotId: effectiveFloorSnapshotId,
-                  })
-                : null;
-
-              if (effectiveFloorSnapshotId && !floor) {
-                return Response.json({ error: "floorSnapshotId not found for file" }, { status: 400 });
+              let floorContent = currentContents.oldContent;
+              if (effectiveFloorRevisionId) {
+                const resolvedFloorContent = await readContentAtRevision(effectiveFloorRevisionId, currentFile);
+                if (resolvedFloorContent === undefined) {
+                  return Response.json({ error: "floorRevisionId not found for file" }, { status: 400 });
+                }
+                floorContent = resolvedFloorContent;
               }
-
-              const floorContent = floor ? floor.file.baselineNewContent : currentContents.oldContent;
-              const ceilingContent = ceiling.file.baselineNewContent;
 
               if (floorContent === ceilingContent) {
                 return Response.json({
@@ -607,8 +754,8 @@ export async function startReviewServer(
                   viewMode: "delta" as const,
                   patch: buildNoChangesPatch(currentFile.filePath, ceilingContent),
                   snapshotId: context.snapshot.snapshotId,
-                  floorSnapshotId: effectiveFloorSnapshotId,
-                  ceilingSnapshotId: effectiveCeilingSnapshotId,
+                  floorRevisionId: effectiveFloorRevisionId,
+                  ceilingRevisionId: effectiveCeilingRevisionId,
                 });
               }
 
@@ -634,8 +781,8 @@ export async function startReviewServer(
                 viewMode: "delta" as const,
                 patch: deltaPatch,
                 snapshotId: context.snapshot.snapshotId,
-                floorSnapshotId: effectiveFloorSnapshotId,
-                ceilingSnapshotId: effectiveCeilingSnapshotId,
+                floorRevisionId: effectiveFloorRevisionId,
+                ceilingRevisionId: effectiveCeilingRevisionId,
               });
             } catch (err) {
               const message =

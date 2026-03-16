@@ -268,4 +268,110 @@ describe("pi review server", () => {
       server.stop();
     }
   });
+
+  test("review strip is commit-based with a working-tree head in uncommitted mode", async () => {
+    const homeDir = makeTempDir("plannotator-pi-home-");
+    const repoDir = initRepo();
+    process.env.HOME = homeDir;
+    process.chdir(repoDir);
+    process.env.PLANNOTATOR_PORT = String(await reservePort());
+
+    writeFileSync(join(repoDir, "tracked.txt"), "commit-two\n", "utf-8");
+    git(repoDir, ["add", "tracked.txt"]);
+    git(repoDir, ["commit", "-m", "second commit"]);
+
+    writeFileSync(join(repoDir, "tracked.txt"), "working-tree\n", "utf-8");
+
+    const gitContext = await getGitContext();
+    const diff = await runGitDiff("uncommitted", gitContext.defaultBranch);
+
+    const server = await startReviewServer({
+      rawPatch: diff.patch,
+      gitRef: diff.label,
+      error: diff.error,
+      diffType: "uncommitted",
+      gitContext,
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>review</body></html>",
+    });
+
+    try {
+      const reviewerId = "commit-strip-tester";
+      const historyResponse = await fetch(
+        `${server.url}/api/review/file-history?reviewerId=${reviewerId}&filePath=tracked.txt`,
+      );
+      expect(historyResponse.status).toBe(200);
+
+      const history = await historyResponse.json() as {
+        headRevisionId: string;
+        cells: Array<{ revisionId: string; kind?: string }>;
+      };
+
+      expect(history.cells.length).toBeGreaterThan(1);
+      expect(history.headRevisionId.startsWith("wt:")).toBe(true);
+      expect(history.cells[history.cells.length - 1]?.kind).toBe("working-tree");
+      expect(history.cells.some((cell) => /^[0-9a-f]{40}$/.test(cell.revisionId))).toBe(true);
+
+      const floorRevisionId = history.cells[history.cells.length - 2]?.revisionId;
+      expect(floorRevisionId).toBeTruthy();
+
+      const fileViewResponse = await fetch(`${server.url}/api/review/file-view`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reviewerId,
+          filePath: "tracked.txt",
+          viewMode: "delta",
+          floorRevisionId,
+          ceilingRevisionId: history.headRevisionId,
+        }),
+      });
+      expect(fileViewResponse.status).toBe(200);
+
+      const fileView = await fileViewResponse.json() as {
+        viewMode: string;
+        patch: string;
+      };
+
+      expect(fileView.viewMode).toBe("delta");
+      expect(fileView.patch).toContain("@@");
+      expect(fileView.patch).toContain("working-tree");
+
+      const checkpointResponse = await fetch(`${server.url}/api/review/checkpoint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reviewerId,
+          filePath: "tracked.txt",
+          action: "mark-reviewed",
+          throughRevisionId: history.headRevisionId,
+        }),
+      });
+      expect(checkpointResponse.status).toBe(200);
+
+      const stateResponse = await fetch(
+        `${server.url}/api/review/state?reviewerId=${reviewerId}`,
+      );
+      expect(stateResponse.status).toBe(200);
+
+      const state = await stateResponse.json() as {
+        files: Array<{ filePath: string; status: string }>;
+      };
+      const trackedState = state.files.find((file) => file.filePath === "tracked.txt");
+      expect(trackedState?.status).toBe("reviewed");
+
+      await fetch(`${server.url}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          approved: true,
+          feedback: "done",
+          annotations: [],
+        }),
+      });
+      await server.waitForDecision();
+    } finally {
+      server.stop();
+    }
+  });
 });

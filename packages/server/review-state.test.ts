@@ -246,8 +246,8 @@ describe("file revision strip", () => {
       rootDir,
     });
 
-    expect(strip.headSnapshotId).toBe("rev_current");
-    expect(strip.cells[strip.cells.length - 1]?.snapshotId).toBe("rev_current");
+    expect(strip.headRevisionId).toBe("rev_current");
+    expect(strip.cells[strip.cells.length - 1]?.revisionId).toBe("rev_current");
   });
 
   test("returns ordered cells and reviewed default floor", () => {
@@ -318,11 +318,11 @@ describe("file revision strip", () => {
     });
 
     expect(strip.cells).toHaveLength(2);
-    expect(strip.cells[0].snapshotId).toBe("rev_001");
-    expect(strip.cells[1].snapshotId).toBe("rev_002");
-    expect(strip.headSnapshotId).toBe("rev_002");
-    expect(strip.reviewedSnapshotId).toBe("rev_001");
-    expect(strip.defaultFloorSnapshotId).toBe("rev_001");
+    expect(strip.cells[0].revisionId).toBe("rev_001");
+    expect(strip.cells[1].revisionId).toBe("rev_002");
+    expect(strip.headRevisionId).toBe("rev_002");
+    expect(strip.reviewedRevisionId).toBe("rev_001");
+    expect(strip.defaultFloorRevisionId).toBe("rev_001");
   });
 
   test("resolves floor snapshot file for selected revision", () => {
@@ -348,7 +348,7 @@ describe("file revision strip", () => {
       project,
       snapshot,
       filePath: "src/review.ts",
-      floorSnapshotId: "rev_floor",
+      floorRevisionId: "rev_floor",
       rootDir,
     });
 
