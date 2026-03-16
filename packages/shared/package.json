@@ -5,6 +5,8 @@
   "exports": {
     "./compress": "./compress.ts",
     "./crypto": "./crypto.ts",
-    "./feedback-templates": "./feedback-templates.ts"
+    "./feedback-templates": "./feedback-templates.ts",
+    "./review-core": "./review-core.ts",
+    "./types": "./types.ts"
   }
 }

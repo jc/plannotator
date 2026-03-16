@@ -272,18 +272,25 @@ export default function plannotator(pi: ExtensionAPI): void {
 
       ctx.ui.notify("Opening code review UI...", "info");
 
-      const gitCtx = getGitContext();
-      const { patch: rawPatch, label: gitRef } = runGitDiff("uncommitted", gitCtx.defaultBranch);
-
       let server: ReviewServerResult;
       try {
+        const gitCtx = await getGitContext();
+        const {
+          patch: rawPatch,
+          label: gitRef,
+          error,
+        } = await runGitDiff("uncommitted", gitCtx.defaultBranch);
+
         server = await startReviewServer({
           rawPatch,
           gitRef,
+          error,
           origin: "pi",
           diffType: "uncommitted",
           gitContext: gitCtx,
           htmlContent: reviewHtmlContent,
+          sharingEnabled: process.env.PLANNOTATOR_SHARE !== "disabled",
+          shareBaseUrl: process.env.PLANNOTATOR_SHARE_URL || undefined,
         });
       } catch (err) {
         ctx.ui.notify(`Failed to start code review UI: ${getStartupErrorMessage(err)}`, "error");
