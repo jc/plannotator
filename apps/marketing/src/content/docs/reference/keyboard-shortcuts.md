@@ -20,7 +20,7 @@ Keyboard shortcuts available in the Plannotator plan review, code review, and an
 | `[` / `]` | Code review | Move **From** (floor) older/newer |
 | `Shift+[ / Shift+]` | Code review | Move **To** (ceiling) older/newer |
 | `B` / `H` | Code review | Set floor to checkpoint (or Base) / ceiling to Head |
-| `J` / `K` | Code review | Next / previous file |
+| `J` / `K` | Code review | Next / previous unreviewed file |
 | `Home` / `End` | Code review | First / last file |
 | `Cmd/Ctrl+Enter` | Annotate mode | Send annotations |
 | `Cmd/Ctrl+S` | Any mode (with API) | Quick save to default notes app |

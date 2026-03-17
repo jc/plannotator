@@ -125,8 +125,8 @@ const reviewShortcuts: ShortcutSection[] = [
   {
     title: 'File Navigation',
     shortcuts: [
-      { keys: ['J'], desc: 'Next file' },
-      { keys: ['K'], desc: 'Previous file' },
+      { keys: ['J'], desc: 'Next unreviewed file' },
+      { keys: ['K'], desc: 'Previous unreviewed file' },
       { keys: ['Home'], desc: 'First file' },
       { keys: ['End'], desc: 'Last file' },
     ],

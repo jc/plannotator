@@ -51,7 +51,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
   currentBranch,
   stagedFiles,
 }) => {
-  // Keyboard navigation: j/k or arrow keys
+  // Keyboard navigation: j/k jumps between files needing review; arrows keep linear navigation
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (!enableKeyboardNav) return;
 
@@ -59,11 +59,39 @@ export const FileTree: React.FC<FileTreeProps> = ({
       return;
     }
 
-    if (e.key === 'j' || e.key === 'ArrowDown') {
+    const isReviewPending = (index: number) => {
+      const file = files[index];
+      if (!file) return false;
+      const state = reviewStates[getFileKey(file.path, file.oldPath)] || reviewStates[getFileKey(file.path)];
+      return state?.status === 'unreviewed' || state?.status === 'needs-rereview';
+    };
+
+    const findPendingInDirection = (direction: 1 | -1) => {
+      for (
+        let i = activeFileIndex + direction;
+        i >= 0 && i < files.length;
+        i += direction
+      ) {
+        if (isReviewPending(i)) return i;
+      }
+      return null;
+    };
+
+    if (e.key === 'j') {
+      const nextPendingIndex = findPendingInDirection(1);
+      if (nextPendingIndex === null) return;
+      e.preventDefault();
+      onSelectFile(nextPendingIndex);
+    } else if (e.key === 'k') {
+      const prevPendingIndex = findPendingInDirection(-1);
+      if (prevPendingIndex === null) return;
+      e.preventDefault();
+      onSelectFile(prevPendingIndex);
+    } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       const nextIndex = Math.min(activeFileIndex + 1, files.length - 1);
       onSelectFile(nextIndex);
-    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+    } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       const prevIndex = Math.max(activeFileIndex - 1, 0);
       onSelectFile(prevIndex);
@@ -74,7 +102,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
       e.preventDefault();
       onSelectFile(files.length - 1);
     }
-  }, [enableKeyboardNav, activeFileIndex, files.length, onSelectFile]);
+  }, [enableKeyboardNav, activeFileIndex, files, onSelectFile, reviewStates]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
