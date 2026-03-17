@@ -289,6 +289,42 @@ diffs-container {
   color: var(--primary-foreground);
 }
 
+.review-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.review-toggle.pending {
+  background: oklch(from var(--destructive) l c h / 0.14);
+  border-color: oklch(from var(--destructive) l c h / 0.36);
+  color: var(--destructive);
+}
+
+.review-toggle.pending:hover {
+  background: oklch(from var(--destructive) l c h / 0.22);
+}
+
+.review-toggle.reviewed {
+  background: oklch(from var(--success) l c h / 0.15);
+  border-color: oklch(from var(--success) l c h / 0.35);
+  color: var(--success);
+}
+
+.review-toggle.reviewed:hover {
+  background: oklch(from var(--success) l c h / 0.25);
+}
+
+.review-toggle.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .review-strip-all {
   border: 1px solid var(--border);
   background: var(--muted);

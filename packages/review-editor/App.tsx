@@ -23,7 +23,6 @@ import type {
   FileCheckpointAction,
   FileRevisionStripResponse,
   FileReviewState,
-  FileViewMode,
   GitContext,
   ReviewStateResponse,
 } from '@plannotator/shared/types';
@@ -595,7 +594,7 @@ const ReviewApp: React.FC = () => {
 
       const data = await res.json() as {
         patch: string;
-        viewMode: FileViewMode;
+        viewMode: 'full' | 'delta';
       };
 
       setFilePatchOverrides(prev => {
@@ -615,30 +614,6 @@ const ReviewApp: React.FC = () => {
       });
     }
   }, [identity, origin, getRevisionStripForFile]);
-
-  const handleSetFileViewMode = useCallback(async (file: DiffFile, mode: FileViewMode) => {
-    const key = getFileKey(file.path, file.oldPath);
-    const strip = getRevisionStripForFile(file);
-    if (!strip) return;
-
-    if (mode === 'full') {
-      setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: null }));
-      setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: strip.headRevisionId }));
-      setFilePatchOverrides(prev => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-      return;
-    }
-
-    const reviewedRevisionId = strip.reviewedRevisionId;
-    if (!reviewedRevisionId) return;
-
-    setSelectedFloorRevisionIds(prev => ({ ...prev, [key]: reviewedRevisionId }));
-    setSelectedCeilingRevisionIds(prev => ({ ...prev, [key]: strip.headRevisionId }));
-    await fetchFilePatchForRange(file, reviewedRevisionId, strip.headRevisionId);
-  }, [fetchFilePatchForRange, getRevisionStripForFile]);
 
   const handleSelectRevisionFrom = useCallback(async (file: DiffFile, floorRevisionId: string | null) => {
     const key = getFileKey(file.path, file.oldPath);
@@ -809,9 +784,6 @@ const ReviewApp: React.FC = () => {
   const activeSelectedCeilingRevisionId = activeFileKey
     ? (selectedCeilingRevisionIds[activeFileKey] || activeFileRevisionStrip?.headRevisionId || null)
     : null;
-  const isFullRange = !activeSelectedFloorRevisionId
-    && (!activeFileRevisionStrip || activeSelectedCeilingRevisionId === activeFileRevisionStrip.headRevisionId);
-  const activeFileViewMode: FileViewMode = isFullRange ? 'full' : 'delta';
   const activePatch = activeFileKey && filePatchOverrides[activeFileKey]
     ? filePatchOverrides[activeFileKey]
     : activeFile?.patch;
@@ -1193,14 +1165,11 @@ const ReviewApp: React.FC = () => {
                 onSelectAnnotation={handleSelectAnnotation}
                 onDeleteAnnotation={handleDeleteAnnotation}
                 reviewStatus={activeFileReviewState?.status || 'unreviewed'}
-                viewMode={activeFileViewMode}
-                deltaAvailable={activeFileReviewState?.deltaAvailable || false}
                 revisionStrip={activeFileRevisionStrip}
                 selectedFloorRevisionId={activeSelectedFloorRevisionId}
                 selectedCeilingRevisionId={activeSelectedCeilingRevisionId}
                 onSelectFloorRevision={origin ? (revisionId) => handleSelectRevisionFrom(activeFile, revisionId) : undefined}
                 onSelectCeilingRevision={origin ? (revisionId) => handleSelectRevisionTo(activeFile, revisionId) : undefined}
-                onSetViewMode={origin ? (mode) => handleSetFileViewMode(activeFile, mode) : undefined}
                 onCheckpointAction={origin ? (action) => handleCheckpointAction(activeFile, action) : undefined}
                 isUpdatingReviewState={isUpdatingReviewState}
                 skipContextFetch={!!(activeFileKey && filePatchOverrides[activeFileKey])}

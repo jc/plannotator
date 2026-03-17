@@ -3,21 +3,17 @@ import type {
   FileCheckpointAction,
   FileRevisionStripResponse,
   FileReviewStatus,
-  FileViewMode,
 } from '@plannotator/shared/types';
 
 interface FileHeaderProps {
   filePath: string;
   patch: string;
   reviewStatus: FileReviewStatus;
-  viewMode: FileViewMode;
-  deltaAvailable: boolean;
   revisionStrip?: FileRevisionStripResponse;
   selectedFloorRevisionId?: string | null;
   selectedCeilingRevisionId?: string | null;
   onSelectFloorRevision?: (revisionId: string | null) => void;
   onSelectCeilingRevision?: (revisionId: string) => void;
-  onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
   isStaged?: boolean;
@@ -28,26 +24,16 @@ interface FileHeaderProps {
   onFileComment?: (anchorEl: HTMLElement) => void;
 }
 
-const STATUS_LABEL: Record<FileReviewStatus, string> = {
-  unreviewed: 'Unreviewed',
-  reviewed: 'Reviewed',
-  'needs-rereview': 'Needs rereview',
-  skipped: 'Skipped',
-};
-
-/** Sticky file header with file path, review controls, strip, Git Add, and Copy Diff button */
+/** Sticky file header with file path, revision strip, review toggle, and utility actions */
 export const FileHeader: React.FC<FileHeaderProps> = ({
   filePath,
   patch,
   reviewStatus,
-  viewMode,
-  deltaAvailable,
   revisionStrip,
   selectedFloorRevisionId = null,
   selectedCeilingRevisionId = null,
   onSelectFloorRevision,
   onSelectCeilingRevision,
-  onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
   isStaged = false,
@@ -60,9 +46,36 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
   const [copied, setCopied] = useState(false);
   const fileCommentRef = useRef<HTMLButtonElement>(null);
 
-  const reviewedRevisionId = revisionStrip?.reviewedRevisionId;
+  const reviewedRevisionId = revisionStrip?.reviewedRevisionId || null;
   const headRevisionId = revisionStrip?.headRevisionId;
-  const canReviewFromCheckpoint = !!reviewedRevisionId;
+  const selectedToRevisionId = selectedCeilingRevisionId || headRevisionId || null;
+
+  const revisionOrder = (revisionId: string | null | undefined): number => {
+    if (!revisionStrip || !revisionId) return -1;
+    return revisionStrip.cells.findIndex((cell) => cell.revisionId === revisionId);
+  };
+
+  const reviewedThroughTo = (() => {
+    const reviewedOrder = revisionOrder(reviewedRevisionId);
+    const selectedToOrder = revisionOrder(selectedToRevisionId);
+
+    if (reviewedOrder !== -1 && selectedToOrder !== -1) {
+      return reviewedOrder >= selectedToOrder;
+    }
+
+    return reviewStatus === 'reviewed';
+  })();
+
+  const reviewToggleAction: FileCheckpointAction = reviewedThroughTo ? 'reset' : 'mark-reviewed';
+  const reviewToggleTitle = reviewedThroughTo
+    ? 'Reviewed through the selected To revision. Click to clear reviewed state.'
+    : 'Not reviewed through the selected To revision. Click to mark reviewed through here.';
+
+  const skipAction: FileCheckpointAction = reviewStatus === 'skipped' ? 'reset' : 'skip';
+  const skipLabel = reviewStatus === 'skipped' ? 'Unskip' : 'Skip for now';
+  const skipTitle = reviewStatus === 'skipped'
+    ? 'Remove skipped status for this file'
+    : 'Skip this file for now';
 
   const cellTitle = (cell: NonNullable<typeof revisionStrip>["cells"][number], side: "From" | "To"): string => {
     const revisionLabel = cell.label || cell.revisionId.slice(0, 8);
@@ -154,78 +167,43 @@ export const FileHeader: React.FC<FileHeaderProps> = ({
       </div>
 
       <div className="flex items-center gap-2 flex-wrap justify-end">
-        <span className={`file-status-chip ${reviewStatus}`}>
-          {STATUS_LABEL[reviewStatus]}
-        </span>
-
-        {onSetViewMode && (
-          <div className="flex items-center gap-1 bg-muted rounded-md p-0.5">
-            <button
-              onClick={() => onSetViewMode('delta')}
-              disabled={!deltaAvailable || !canReviewFromCheckpoint || isUpdatingReviewState}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
-                viewMode === 'delta'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              } ${(!deltaAvailable || !canReviewFromCheckpoint || isUpdatingReviewState) ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title={canReviewFromCheckpoint ? 'Jump to reviewed checkpoint as the diff floor' : 'Mark the file reviewed first to use checkpoint-based diff floors'}
-            >
-              Review new changes
-            </button>
-            <button
-              onClick={() => onSetViewMode('full')}
-              disabled={isUpdatingReviewState}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
-                viewMode === 'full'
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              } ${isUpdatingReviewState ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title="Show full current patch"
-            >
-              Review all changes
-            </button>
-          </div>
+        {onCheckpointAction && (
+          <button
+            onClick={() => onCheckpointAction(reviewToggleAction)}
+            disabled={isUpdatingReviewState}
+            className={`review-toggle ${reviewedThroughTo ? 'reviewed' : 'pending'} ${isUpdatingReviewState ? 'disabled' : ''}`}
+            title={reviewToggleTitle}
+            aria-label={reviewToggleTitle}
+          >
+            {reviewedThroughTo ? (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.27 2.943 9.543 7-1.274 4.057-5.065 7-9.543 7-4.477 0-8.268-2.943-9.542-7z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            ) : (
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.584 10.587A2 2 0 0012 14a2 2 0 001.414-.586" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.88 5.09A9.95 9.95 0 0112 5c4.478 0 8.27 2.943 9.543 7a9.97 9.97 0 01-4.132 5.112" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6.228 6.232A9.965 9.965 0 002.458 12c1.274 4.057 5.065 7 9.543 7 1.596 0 3.106-.37 4.45-1.03" />
+              </svg>
+            )}
+          </button>
         )}
 
         {onCheckpointAction && (
-          <>
-            <button
-              onClick={() => onCheckpointAction('mark-reviewed')}
-              disabled={isUpdatingReviewState}
-              className={`text-xs px-2 py-1 rounded transition-colors flex items-center gap-1 ${
-                isUpdatingReviewState
-                  ? 'opacity-50 cursor-not-allowed text-muted-foreground'
-                  : 'bg-success/15 text-success hover:bg-success/25'
-              }`}
-              title="Persist reviewed checkpoint through selected revision"
-            >
-              Mark reviewed through here
-            </button>
-            <button
-              onClick={() => onCheckpointAction('skip')}
-              disabled={isUpdatingReviewState}
-              className={`text-xs px-2 py-1 rounded transition-colors ${
-                isUpdatingReviewState
-                  ? 'opacity-50 cursor-not-allowed text-muted-foreground'
-                  : 'bg-warning/15 text-warning hover:bg-warning/25'
-              }`}
-              title="Skip this file for now"
-            >
-              Skip for now
-            </button>
-            <button
-              onClick={() => onCheckpointAction('reset')}
-              disabled={isUpdatingReviewState || reviewStatus === 'unreviewed'}
-              className={`text-xs px-2 py-1 rounded transition-colors ${
-                isUpdatingReviewState || reviewStatus === 'unreviewed'
-                  ? 'opacity-50 cursor-not-allowed text-muted-foreground'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              }`}
-              title="Clear reviewed checkpoint for this file"
-            >
-              Clear reviewed state
-            </button>
-          </>
+          <button
+            onClick={() => onCheckpointAction(skipAction)}
+            disabled={isUpdatingReviewState}
+            className={`text-xs px-2 py-1 rounded transition-colors ${
+              isUpdatingReviewState
+                ? 'opacity-50 cursor-not-allowed text-muted-foreground'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+            title={skipTitle}
+          >
+            {skipLabel}
+          </button>
         )}
 
         {canStage && onStage && (

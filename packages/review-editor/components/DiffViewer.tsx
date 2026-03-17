@@ -10,7 +10,7 @@ import { FileHeader } from './FileHeader';
 import { InlineAnnotation } from './InlineAnnotation';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { SuggestionModal } from './SuggestionModal';
-import type { FileCheckpointAction, FileRevisionStripResponse, FileReviewStatus, FileViewMode } from '@plannotator/shared/types';
+import type { FileCheckpointAction, FileRevisionStripResponse, FileReviewStatus } from '@plannotator/shared/types';
 
 interface DiffViewerProps {
   patch: string;
@@ -27,14 +27,11 @@ interface DiffViewerProps {
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
   reviewStatus: FileReviewStatus;
-  viewMode: FileViewMode;
-  deltaAvailable: boolean;
   revisionStrip?: FileRevisionStripResponse;
   selectedFloorRevisionId?: string | null;
   selectedCeilingRevisionId?: string | null;
   onSelectFloorRevision?: (revisionId: string | null) => void;
   onSelectCeilingRevision?: (revisionId: string) => void;
-  onSetViewMode?: (mode: FileViewMode) => void;
   onCheckpointAction?: (action: FileCheckpointAction) => void;
   isUpdatingReviewState?: boolean;
   skipContextFetch?: boolean;
@@ -60,14 +57,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
   onSelectAnnotation,
   onDeleteAnnotation,
   reviewStatus,
-  viewMode,
-  deltaAvailable,
   revisionStrip,
   selectedFloorRevisionId,
   selectedCeilingRevisionId,
   onSelectFloorRevision,
   onSelectCeilingRevision,
-  onSetViewMode,
   onCheckpointAction,
   isUpdatingReviewState = false,
   skipContextFetch = false,
@@ -244,14 +238,11 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
         filePath={filePath}
         patch={patch}
         reviewStatus={reviewStatus}
-        viewMode={viewMode}
-        deltaAvailable={deltaAvailable}
         revisionStrip={revisionStrip}
         selectedFloorRevisionId={selectedFloorRevisionId}
         selectedCeilingRevisionId={selectedCeilingRevisionId}
         onSelectFloorRevision={onSelectFloorRevision}
         onSelectCeilingRevision={onSelectCeilingRevision}
-        onSetViewMode={onSetViewMode}
         onCheckpointAction={onCheckpointAction}
         isUpdatingReviewState={isUpdatingReviewState}
         isStaged={isStaged}
