@@ -118,8 +118,8 @@ const reviewShortcuts: ShortcutSection[] = [
     title: 'Actions',
     shortcuts: [
       { keys: [mod, enter], desc: 'Approve / Send feedback' },
-      { keys: [mod, '⇧', 'C'], desc: 'Toggle comment mode' },
-      { keys: ['Esc'], desc: 'Collapse sidebar' },
+      { keys: ['R'], desc: 'Toggle reviewed through selected To' },
+      { keys: ['S'], desc: 'Skip / Unskip current file' },
     ],
   },
   {
@@ -129,6 +129,17 @@ const reviewShortcuts: ShortcutSection[] = [
       { keys: ['K'], desc: 'Previous file' },
       { keys: ['Home'], desc: 'First file' },
       { keys: ['End'], desc: 'Last file' },
+    ],
+  },
+  {
+    title: 'Revision Range',
+    shortcuts: [
+      { keys: ['['], desc: 'Floor older' },
+      { keys: [']'], desc: 'Floor newer' },
+      { keys: ['⇧', '['], desc: 'Ceiling older' },
+      { keys: ['⇧', ']'], desc: 'Ceiling newer' },
+      { keys: ['B'], desc: 'Floor = Checkpoint/Base' },
+      { keys: ['H'], desc: 'Ceiling = Head' },
     ],
   },
   {

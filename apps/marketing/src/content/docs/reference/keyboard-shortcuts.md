@@ -15,6 +15,13 @@ Keyboard shortcuts available in the Plannotator plan review, code review, and an
 | `Cmd/Ctrl+Enter` | Plan review (no annotations) | Approve plan |
 | `Cmd/Ctrl+Enter` | Plan review (with annotations) | Send feedback |
 | `Cmd/Ctrl+Enter` | Code review | Send feedback / Approve |
+| `R` | Code review | Toggle reviewed through selected **To** revision |
+| `S` | Code review | Skip / unskip current file |
+| `[` / `]` | Code review | Move **From** (floor) older/newer |
+| `Shift+[ / Shift+]` | Code review | Move **To** (ceiling) older/newer |
+| `B` / `H` | Code review | Set floor to checkpoint (or Base) / ceiling to Head |
+| `J` / `K` | Code review | Next / previous file |
+| `Home` / `End` | Code review | First / last file |
 | `Cmd/Ctrl+Enter` | Annotate mode | Send annotations |
 | `Cmd/Ctrl+S` | Any mode (with API) | Quick save to default notes app |
 | `Escape` | Annotation toolbar | Close toolbar |

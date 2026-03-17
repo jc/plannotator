@@ -87,6 +87,20 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 9);
 }
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+
+  return target.isContentEditable || !!target.closest('[contenteditable="true"]');
+}
+
 // Export annotations as markdown feedback
 function exportReviewFeedback(annotations: CodeAnnotation[], files: DiffFile[]): string {
   if (annotations.length === 0) {
@@ -787,6 +801,143 @@ const ReviewApp: React.FC = () => {
   const activePatch = activeFileKey && filePatchOverrides[activeFileKey]
     ? filePatchOverrides[activeFileKey]
     : activeFile?.patch;
+
+  // Keyboard shortcuts for checkpoint review workflow
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!origin || !activeFile) return;
+      if (isTypingTarget(e.target)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.repeat) return;
+      if (showExportModal || showNoAnnotationsDialog || showApproveWarning || !!draftBanner) return;
+      if (submitted || isLoadingDiff || isUpdatingReviewState) return;
+
+      const strip = activeFileRevisionStrip;
+      const cells = strip?.cells ?? [];
+      const selectedFloorRevisionId = activeSelectedFloorRevisionId || null;
+      const selectedCeilingRevisionId =
+        activeSelectedCeilingRevisionId || strip?.headRevisionId || null;
+
+      const orderOf = (revisionId: string | null | undefined) => {
+        if (!revisionId) return -1;
+        return cells.findIndex((cell) => cell.revisionId === revisionId);
+      };
+
+      const applyFloorSelection = (nextFloorRevisionId: string | null) => {
+        if (!strip) return;
+        e.preventDefault();
+        void handleSelectRevisionFrom(activeFile, nextFloorRevisionId);
+      };
+
+      const applyCeilingSelection = (nextCeilingRevisionId: string) => {
+        if (!strip) return;
+        e.preventDefault();
+        void handleSelectRevisionTo(activeFile, nextCeilingRevisionId);
+      };
+
+      if (e.key === 'r' || e.key === 'R') {
+        if (!strip || !selectedCeilingRevisionId) return;
+
+        const reviewedOrder = orderOf(strip.reviewedRevisionId);
+        const selectedToOrder = orderOf(selectedCeilingRevisionId);
+        const reviewedThroughTo =
+          reviewedOrder !== -1 && selectedToOrder !== -1
+            ? reviewedOrder >= selectedToOrder
+            : activeFileReviewState?.status === 'reviewed';
+
+        e.preventDefault();
+        void handleCheckpointAction(activeFile, reviewedThroughTo ? 'reset' : 'mark-reviewed');
+        return;
+      }
+
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        const action: FileCheckpointAction =
+          activeFileReviewState?.status === 'skipped' ? 'reset' : 'skip';
+        void handleCheckpointAction(activeFile, action);
+        return;
+      }
+
+      if (e.key === 'b' || e.key === 'B') {
+        const checkpointOrBaseFloorRevisionId = strip?.defaultFloorRevisionId || null;
+        applyFloorSelection(checkpointOrBaseFloorRevisionId);
+        return;
+      }
+
+      if (e.key === 'h' || e.key === 'H') {
+        if (!strip?.headRevisionId) return;
+        applyCeilingSelection(strip.headRevisionId);
+        return;
+      }
+
+      if (!strip || cells.length === 0) return;
+
+      if (e.key === '[' && !e.shiftKey) {
+        if (!selectedFloorRevisionId) return;
+
+        const floorOrder = orderOf(selectedFloorRevisionId);
+        if (floorOrder === -1) return;
+
+        const nextFloorRevisionId = floorOrder === 0 ? null : cells[floorOrder - 1].revisionId;
+        applyFloorSelection(nextFloorRevisionId);
+        return;
+      }
+
+      if (e.key === ']' && !e.shiftKey) {
+        const floorOrder = orderOf(selectedFloorRevisionId);
+
+        const nextFloorRevisionId =
+          floorOrder === -1
+            ? cells[0].revisionId
+            : floorOrder >= cells.length - 1
+              ? selectedFloorRevisionId
+              : cells[floorOrder + 1].revisionId;
+
+        if (nextFloorRevisionId === selectedFloorRevisionId) return;
+        applyFloorSelection(nextFloorRevisionId);
+        return;
+      }
+
+      if (e.key === '{' || (e.key === '[' && e.shiftKey)) {
+        if (!selectedCeilingRevisionId) return;
+
+        const ceilingOrder = orderOf(selectedCeilingRevisionId);
+        if (ceilingOrder <= 0) return;
+
+        applyCeilingSelection(cells[ceilingOrder - 1].revisionId);
+        return;
+      }
+
+      if (e.key === '}' || (e.key === ']' && e.shiftKey)) {
+        if (!selectedCeilingRevisionId) return;
+
+        const ceilingOrder = orderOf(selectedCeilingRevisionId);
+        if (ceilingOrder === -1 || ceilingOrder >= cells.length - 1) return;
+
+        applyCeilingSelection(cells[ceilingOrder + 1].revisionId);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    origin,
+    activeFile,
+    activeFileReviewState?.status,
+    activeFileRevisionStrip,
+    activeSelectedFloorRevisionId,
+    activeSelectedCeilingRevisionId,
+    handleSelectRevisionFrom,
+    handleSelectRevisionTo,
+    handleCheckpointAction,
+    showExportModal,
+    showNoAnnotationsDialog,
+    showApproveWarning,
+    draftBanner,
+    submitted,
+    isLoadingDiff,
+    isUpdatingReviewState,
+  ]);
 
   const feedbackMarkdown = useMemo(() => {
     let output = exportReviewFeedback(annotations, files);
