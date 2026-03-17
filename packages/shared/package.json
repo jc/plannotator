@@ -8,6 +8,7 @@
     "./feedback-templates": "./feedback-templates.ts",
     "./review-core": "./review-core.ts",
     "./review-state-core": "./review-state-core.ts",
+    "./checklist": "./checklist.ts",
     "./types": "./types.ts"
   }
 }
