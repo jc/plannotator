@@ -33,7 +33,9 @@ export interface AnnotateServerOptions {
   /** HTML content to serve for the UI */
   htmlContent: string;
   /** Origin identifier for UI customization */
-  origin?: "opencode" | "claude-code" | "pi";
+  origin?: "opencode" | "claude-code" | "pi" | "codex";
+  /** UI mode: "annotate" for files, "annotate-last" for last agent message */
+  mode?: "annotate" | "annotate-last";
   /** Whether URL sharing is enabled (default: true) */
   sharingEnabled?: boolean;
   /** Custom base URL for share links */
@@ -79,6 +81,7 @@ export async function startAnnotateServer(
     filePath,
     htmlContent,
     origin,
+    mode = "annotate",
     sharingEnabled = true,
     shareBaseUrl,
     onReady,
@@ -119,7 +122,7 @@ export async function startAnnotateServer(
             return Response.json({
               plan: markdown,
               origin,
-              mode: "annotate",
+              mode,
               filePath,
               sharingEnabled,
               shareBaseUrl,

@@ -19,13 +19,17 @@ import { DiffViewer } from './components/DiffViewer';
 import { ReviewPanel } from './components/ReviewPanel';
 import { FileTree } from './components/FileTree';
 import { DEMO_DIFF } from './demoData';
+import { exportReviewFeedback } from './utils/exportFeedback';
 import type {
+  DiffOption,
   FileCheckpointAction,
   FileRevisionStripResponse,
   FileReviewState,
   GitContext,
   ReviewStateResponse,
+  WorktreeInfo,
 } from '@plannotator/shared/types';
+import type { PRMetadata } from '@plannotator/shared/pr-provider';
 
 declare const __APP_VERSION__: string;
 
@@ -101,73 +105,6 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || !!target.closest('[contenteditable="true"]');
 }
 
-// Export annotations as markdown feedback
-function exportReviewFeedback(annotations: CodeAnnotation[], files: DiffFile[]): string {
-  if (annotations.length === 0) {
-    return '# Code Review\n\nNo feedback provided.';
-  }
-
-  const grouped = new Map<string, CodeAnnotation[]>();
-  for (const ann of annotations) {
-    const existing = grouped.get(ann.filePath) || [];
-    existing.push(ann);
-    grouped.set(ann.filePath, existing);
-  }
-
-  let output = '# Code Review Feedback\n\n';
-
-  for (const [filePath, fileAnnotations] of grouped) {
-    output += `## ${filePath}\n\n`;
-
-    const sorted = [...fileAnnotations].sort((a, b) => {
-      const aScope = a.scope ?? 'line';
-      const bScope = b.scope ?? 'line';
-      if (aScope !== bScope) {
-        return aScope === 'file' ? -1 : 1;
-      }
-      return a.lineStart - b.lineStart;
-    });
-
-    for (let i = 0; i < sorted.length; i++) {
-      const ann = sorted[i];
-      const scope = ann.scope ?? 'line';
-
-      if (scope === 'file') {
-        output += `### File Comment\n`;
-
-        if (ann.text) {
-          output += `${ann.text}\n`;
-        }
-
-        if (ann.suggestedCode) {
-          output += `\n**Suggested code:**\n\`\`\`\n${ann.suggestedCode}\n\`\`\`\n`;
-        }
-
-        output += '\n';
-        continue;
-      }
-
-      const lineRange = ann.lineStart === ann.lineEnd
-        ? `Line ${ann.lineStart}`
-        : `Lines ${ann.lineStart}-${ann.lineEnd}`;
-
-      output += `### ${lineRange} (${ann.side})\n`;
-
-      if (ann.text) {
-        output += `${ann.text}\n`;
-      }
-
-      if (ann.suggestedCode) {
-        output += `\n**Suggested code:**\n\`\`\`\n${ann.suggestedCode}\n\`\`\`\n`;
-      }
-
-      output += '\n';
-    }
-  }
-
-  return output;
-}
-
 const ReviewApp: React.FC = () => {
   const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [files, setFiles] = useState<DiffFile[]>([]);
@@ -201,6 +138,7 @@ const ReviewApp: React.FC = () => {
   const [showApproveWarning, setShowApproveWarning] = useState(false);
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  const [prMetadata, setPrMetadata] = useState<PRMetadata | null>(null);
 
   const identity = useMemo(() => getIdentity(), []);
 
@@ -299,6 +237,7 @@ const ReviewApp: React.FC = () => {
         gitContext?: GitContext;
         sharingEnabled?: boolean;
         repoInfo?: { display: string; branch?: string };
+        prMetadata?: PRMetadata;
         error?: string;
       }) => {
         const apiFiles = parseDiffToFiles(data.rawPatch);
@@ -317,6 +256,7 @@ const ReviewApp: React.FC = () => {
         if (data.gitContext) setGitContext(data.gitContext);
         if (data.sharingEnabled !== undefined) setSharingEnabled(data.sharingEnabled);
         if (data.repoInfo) setRepoInfo(data.repoInfo);
+        if (data.prMetadata) setPrMetadata(data.prMetadata);
         if (data.error) setDiffError(data.error);
         await refreshReviewStateForFiles();
       })
@@ -777,7 +717,7 @@ const ReviewApp: React.FC = () => {
       return;
     }
     try {
-      const feedback = exportReviewFeedback(annotations, files);
+      const feedback = exportReviewFeedback(annotations, prMetadata);
       await navigator.clipboard.writeText(feedback);
       setCopyFeedback('Feedback copied!');
       setTimeout(() => setCopyFeedback(null), 2000);
@@ -786,7 +726,7 @@ const ReviewApp: React.FC = () => {
       setCopyFeedback('Failed to copy');
       setTimeout(() => setCopyFeedback(null), 2000);
     }
-  }, [annotations, files]);
+  }, [annotations, prMetadata]);
 
   const activeFile = files[activeFileIndex];
   const activeFileKey = activeFile ? getFileKey(activeFile.path, activeFile.oldPath) : null;
@@ -940,12 +880,12 @@ const ReviewApp: React.FC = () => {
   ]);
 
   const feedbackMarkdown = useMemo(() => {
-    let output = exportReviewFeedback(annotations, files);
+    let output = exportReviewFeedback(annotations, prMetadata);
     if (editorAnnotations.length > 0) {
       output += exportEditorAnnotations(editorAnnotations);
     }
     return output;
-  }, [annotations, files, editorAnnotations]);
+  }, [annotations, prMetadata, editorAnnotations]);
 
   const totalAnnotationCount = annotations.length + editorAnnotations.length;
 
@@ -1070,29 +1010,35 @@ const ReviewApp: React.FC = () => {
             >
               v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}
             </a>
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-secondary/15 text-secondary hidden md:inline">
-              Code Review
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium hidden md:inline ${
+              prMetadata ? 'bg-violet-500/15 text-violet-400' : 'bg-secondary/15 text-secondary'
+            }`}>
+              {prMetadata ? 'PR Review' : 'Code Review'}
             </span>
-            {/* Agent badge — unreliable for now across multiple harnesses */}
-            {/* {origin && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium hidden md:inline ${
-                origin === 'claude-code'
-                  ? 'bg-orange-500/15 text-orange-400'
-                  : origin === 'pi'
-                    ? 'bg-violet-500/15 text-violet-400'
-                    : 'bg-zinc-500/20 text-zinc-400'
-              }`}>
-                {origin === 'claude-code' ? 'Claude Code' : origin === 'pi' ? 'Pi' : 'OpenCode'}
-              </span>
-            )} */}
-            {repoInfo && (
+            {prMetadata ? (
+              <>
+                <span className="text-muted-foreground/40 hidden md:inline">|</span>
+                <span className="text-xs text-muted-foreground/60 font-mono hidden md:inline">
+                  {prMetadata.owner}/{prMetadata.repo}
+                </span>
+                <a
+                  href={prMetadata.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-accent/80 hover:text-accent hidden md:inline truncate max-w-[300px] transition-colors"
+                  title={prMetadata.title}
+                >
+                  #{prMetadata.number} {prMetadata.title}
+                </a>
+              </>
+            ) : repoInfo ? (
               <>
                 <span className="text-muted-foreground/40 hidden md:inline">|</span>
                 <span className="text-xs text-muted-foreground/60 font-mono hidden md:inline truncate max-w-[200px]" title={repoInfo.display}>
                   {repoInfo.display}
                 </span>
               </>
-            )}
+            ) : null}
           </div>
 
           <div className="flex items-center gap-1 md:gap-2">

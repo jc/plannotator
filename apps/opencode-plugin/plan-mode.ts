@@ -32,28 +32,27 @@ export function validatePlanPath(
     return { ok: false, error: `Path must be absolute. Got: ${filePath}` };
   }
 
-  // 2. Must be inside the plan directory (canonical comparison)
-  try {
-    const canonicalDir = realpathSync(planDir);
-    const canonicalFile = realpathSync(path.dirname(filePath)) + path.sep + path.basename(filePath);
-    if (!canonicalFile.startsWith(canonicalDir + path.sep) && canonicalFile !== canonicalDir) {
-      return {
-        ok: false,
-        error: `Plan file must be inside ${planDir}. Got: ${filePath}`,
-      };
-    }
-  } catch {
-    // If the file's parent dir doesn't exist, realpath will throw.
-    // Check if it's at least structurally inside the plan dir.
-    const normalizedFile = path.normalize(filePath);
-    const normalizedDir = path.normalize(planDir);
-    if (!normalizedFile.startsWith(normalizedDir + path.sep)) {
-      return {
-        ok: false,
-        error: `Plan file must be inside ${planDir}. Got: ${filePath}`,
-      };
-    }
-  }
+  // 2. Directory check disabled — allow plans to be written anywhere.
+  // TODO: revisit if we want to re-scope plan file locations.
+  // try {
+  //   const canonicalDir = realpathSync(planDir);
+  //   const canonicalFile = realpathSync(path.dirname(filePath)) + path.sep + path.basename(filePath);
+  //   if (!canonicalFile.startsWith(canonicalDir + path.sep) && canonicalFile !== canonicalDir) {
+  //     return {
+  //       ok: false,
+  //       error: `Plan file must be inside ${planDir}. Got: ${filePath}`,
+  //     };
+  //   }
+  // } catch {
+  //   const normalizedFile = path.normalize(filePath);
+  //   const normalizedDir = path.normalize(planDir);
+  //   if (!normalizedFile.startsWith(normalizedDir + path.sep)) {
+  //     return {
+  //       ok: false,
+  //       error: `Plan file must be inside ${planDir}. Got: ${filePath}`,
+  //     };
+  //   }
+  // }
 
   // 3. Must exist
   if (!existsSync(filePath)) {

@@ -1,24 +1,32 @@
 ---
 title: "Code Review"
-description: "The /plannotator-review slash command for reviewing uncommitted code changes."
+description: "The /plannotator-review slash command for reviewing uncommitted code changes or GitHub pull requests."
 sidebar:
   order: 11
 section: "Commands"
 ---
 
-The `/plannotator-review` command opens an interactive code review UI for your uncommitted changes.
+The `/plannotator-review` command opens an interactive code review UI for your uncommitted changes or a GitHub pull request.
 
 ## Usage
 
-In your Claude Code or OpenCode session, type:
+**Review uncommitted changes:**
 
 ```
 /plannotator-review
 ```
 
-The command runs `git diff` to capture uncommitted changes, then opens a diff viewer in your browser.
+**Review a GitHub pull request:**
+
+```
+/plannotator-review https://github.com/owner/repo/pull/123
+```
+
+PR review uses the `gh` CLI for authentication, so private repos work automatically if you're authenticated with `gh auth login`.
 
 ## How it works
+
+**Local review:**
 
 ```
 User runs /plannotator-review
@@ -32,6 +40,23 @@ Review server starts, opens browser with diff viewer
 User annotates code, provides feedback
         ↓
 Send Feedback → feedback sent to agent
+Approve → "LGTM" sent to agent
+```
+
+**PR review:**
+
+```
+User runs /plannotator-review <github-url>
+        ↓
+Agent runs: plannotator review <github-url>
+        ↓
+gh CLI fetches PR diff and metadata
+        ↓
+Review server starts, opens browser with diff viewer
+        ↓
+User annotates code, provides feedback
+        ↓
+Send Feedback → PR context included in feedback
 Approve → "LGTM" sent to agent
 ```
 

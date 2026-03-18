@@ -248,7 +248,7 @@ export const parseMarkdownToBlocks = (markdown: string): Block[] => {
 export const wrapFeedbackForAgent = (feedback: string): string =>
   planDenyFeedback(feedback);
 
-export const exportAnnotations = (blocks: Block[], annotations: any[], globalAttachments: ImageAttachment[] = []): string => {
+export const exportAnnotations = (blocks: Block[], annotations: any[], globalAttachments: ImageAttachment[] = [], title: string = 'Plan Feedback', subject: string = 'plan'): string => {
   if (annotations.length === 0 && globalAttachments.length === 0) {
     return 'No changes detected.';
   }
@@ -261,7 +261,7 @@ export const exportAnnotations = (blocks: Block[], annotations: any[], globalAtt
     return a.startOffset - b.startOffset;
   });
 
-  let output = `# Plan Feedback\n\n`;
+  let output = `# ${title}\n\n`;
 
   // Add global reference images section if any
   if (globalAttachments.length > 0) {
@@ -274,7 +274,7 @@ export const exportAnnotations = (blocks: Block[], annotations: any[], globalAtt
   }
 
   if (annotations.length > 0) {
-    output += `I've reviewed this plan and have ${annotations.length} piece${annotations.length > 1 ? 's' : ''} of feedback:\n\n`;
+    output += `I've reviewed this ${subject} and have ${annotations.length} piece${annotations.length > 1 ? 's' : ''} of feedback:\n\n`;
   }
 
   sortedAnns.forEach((ann, index) => {
@@ -291,7 +291,7 @@ export const exportAnnotations = (blocks: Block[], annotations: any[], globalAtt
       case 'DELETION':
         output += `Remove this\n`;
         output += `\`\`\`\n${ann.originalText}\n\`\`\`\n`;
-        output += `> I don't want this in the plan.\n`;
+        output += `> I don't want this in the ${subject}.\n`;
         break;
 
       case 'INSERTION':
@@ -318,7 +318,7 @@ export const exportAnnotations = (blocks: Block[], annotations: any[], globalAtt
         break;
 
       case 'GLOBAL_COMMENT':
-        output += `General feedback about the plan\n`;
+        output += `General feedback about the ${subject}\n`;
         output += `> ${ann.text}\n`;
         break;
     }

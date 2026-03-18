@@ -44,12 +44,15 @@ import {
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
 import { getGitContext, runGitDiff } from "@plannotator/server/git";
+import { parsePRUrl, checkGhAuth, fetchPR } from "@plannotator/server/pr";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
 import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
 import { registerSession, unregisterSession, listSessions } from "@plannotator/server/sessions";
 import { openBrowser } from "@plannotator/server/browser";
 import { detectProjectName } from "@plannotator/server/project";
 import { planDenyFeedback } from "@plannotator/shared/feedback-templates";
+import { findSessionLogsForCwd, getLastRenderedMessage, type RenderedMessage } from "./session-log";
+import { findCodexRolloutByThreadId, getLastCodexMessage } from "./codex-session";
 import path from "path";
 
 // Embed the built HTML at compile time
@@ -133,25 +136,61 @@ if (args[0] === "sessions") {
   // CODE REVIEW MODE
   // ============================================
 
-  // Get git context (branches, available diff options)
-  const gitContext = await getGitContext();
+  const urlArg = args[1];
+  const isPRMode = urlArg?.startsWith("http://") || urlArg?.startsWith("https://");
 
-  // Run git diff HEAD (uncommitted changes - default)
-  const { patch: rawPatch, label: gitRef, error: diffError } = await runGitDiff(
-    "uncommitted",
-    gitContext.defaultBranch
-  );
+  let rawPatch: string;
+  let gitRef: string;
+  let diffError: string | undefined;
+  let gitContext: Awaited<ReturnType<typeof getGitContext>> | undefined;
+  let prMetadata: Awaited<ReturnType<typeof fetchPR>>["metadata"] | undefined;
+
+  if (isPRMode) {
+    // --- PR Review Mode ---
+    const prRef = parsePRUrl(urlArg);
+    if (!prRef) {
+      console.error(`Invalid PR URL: ${urlArg}`);
+      console.error("Supported formats: https://github.com/owner/repo/pull/123");
+      process.exit(1);
+    }
+
+    try {
+      await checkGhAuth();
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : "GitHub CLI auth check failed");
+      process.exit(1);
+    }
+
+    console.error(`Fetching PR #${prRef.number} from ${prRef.owner}/${prRef.repo}...`);
+    try {
+      const pr = await fetchPR(prRef);
+      rawPatch = pr.rawPatch;
+      gitRef = `PR #${prRef.number}`;
+      prMetadata = pr.metadata;
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : "Failed to fetch PR");
+      process.exit(1);
+    }
+  } else {
+    // --- Local Review Mode ---
+    gitContext = await getGitContext();
+    const diffResult = await runGitDiff("uncommitted", gitContext.defaultBranch);
+    rawPatch = diffResult.patch;
+    gitRef = diffResult.label;
+    diffError = diffResult.error;
+  }
 
   const reviewProject = (await detectProjectName()) ?? "_unknown";
 
-  // Start review server (even if empty - user can switch diff types)
+  // Start review server (even if empty - user can switch diff types in local mode)
   const server = await startReviewServer({
     rawPatch,
     gitRef,
     error: diffError,
     origin: "claude-code",
-    diffType: "uncommitted",
+    diffType: isPRMode ? undefined : "uncommitted",
     gitContext,
+    prMetadata,
     sharingEnabled,
     shareBaseUrl,
     htmlContent: reviewHtmlContent,
@@ -171,7 +210,7 @@ if (args[0] === "sessions") {
     mode: "review",
     project: reviewProject,
     startedAt: new Date().toISOString(),
-    label: `review-${reviewProject}`,
+    label: isPRMode ? `pr-review-${prMetadata!.owner}/${prMetadata!.repo}#${prMetadata!.number}` : `review-${reviewProject}`,
   });
 
   // Wait for user feedback
@@ -188,7 +227,9 @@ if (args[0] === "sessions") {
     console.log("Code review completed — no changes requested.");
   } else {
     console.log(result.feedback);
-    console.log("\nThe reviewer has identified issues above. You must address all of them.");
+    if (!isPRMode) {
+      console.log("\nThe reviewer has identified issues above. You must address all of them.");
+    }
   }
   process.exit(0);
 
@@ -274,6 +315,97 @@ if (args[0] === "sessions") {
   server.stop();
 
   // Output feedback (captured by slash command)
+  console.log(result.feedback || "No feedback provided.");
+  process.exit(0);
+
+} else if (args[0] === "annotate-last" || args[0] === "last") {
+  // ============================================
+  // ANNOTATE LAST MESSAGE MODE
+  // ============================================
+
+  const projectRoot = process.env.PLANNOTATOR_CWD || process.cwd();
+  const codexThreadId = process.env.CODEX_THREAD_ID;
+  const isCodex = !!codexThreadId;
+
+  let lastMessage: RenderedMessage | null = null;
+
+  if (codexThreadId) {
+    // Codex path: find rollout by thread ID
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Codex detected, thread ID: ${codexThreadId}`);
+    }
+    const rolloutPath = findCodexRolloutByThreadId(codexThreadId);
+    if (rolloutPath) {
+      if (process.env.PLANNOTATOR_DEBUG) {
+        console.error(`[DEBUG] Rollout: ${rolloutPath}`);
+      }
+      const msg = getLastCodexMessage(rolloutPath);
+      if (msg) {
+        lastMessage = { messageId: codexThreadId, text: msg.text, lineNumbers: [] };
+      }
+    }
+  } else {
+    // Claude Code path: find session logs by CWD
+    const candidates = findSessionLogsForCwd(projectRoot);
+
+    if (process.env.PLANNOTATOR_DEBUG) {
+      console.error(`[DEBUG] Project root: ${projectRoot}`);
+      console.error(`[DEBUG] Candidates: ${candidates.join(", ")}`);
+    }
+
+    for (const logPath of candidates) {
+      if (process.env.PLANNOTATOR_DEBUG) {
+        console.error(`[DEBUG] Trying: ${logPath}`);
+      }
+      lastMessage = getLastRenderedMessage(logPath);
+      if (lastMessage) break;
+    }
+  }
+
+  if (!lastMessage) {
+    console.error("No rendered assistant message found in session logs.");
+    process.exit(1);
+  }
+
+  if (process.env.PLANNOTATOR_DEBUG) {
+    console.error(`[DEBUG] Found message ${lastMessage.messageId} (${lastMessage.text.length} chars)`);
+  }
+
+  const annotateProject = (await detectProjectName()) ?? "_unknown";
+
+  const server = await startAnnotateServer({
+    markdown: lastMessage.text,
+    filePath: "last-message",
+    origin: isCodex ? "codex" : "claude-code",
+    mode: "annotate-last",
+    sharingEnabled,
+    shareBaseUrl,
+    htmlContent: planHtmlContent,
+    onReady: async (url, isRemote, port) => {
+      handleAnnotateServerReady(url, isRemote, port);
+
+      if (isRemote && sharingEnabled) {
+        await writeRemoteShareLink(lastMessage.text, shareBaseUrl, "annotate", "message only").catch(() => {});
+      }
+    },
+  });
+
+  registerSession({
+    pid: process.pid,
+    port: server.port,
+    url: server.url,
+    mode: "annotate",
+    project: annotateProject,
+    startedAt: new Date().toISOString(),
+    label: `annotate-last`,
+  });
+
+  const result = await server.waitForDecision();
+
+  await Bun.sleep(1500);
+
+  server.stop();
+
   console.log(result.feedback || "No feedback provided.");
   process.exit(0);
 

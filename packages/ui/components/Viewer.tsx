@@ -66,6 +66,8 @@ interface ViewerProps {
   showDemoBadge?: boolean;
   /** Max width in px for the plan card (from plan width setting) */
   maxWidth?: number;
+  /** Label for the copy button (default: "Copy plan") */
+  copyLabel?: string;
 }
 
 export interface ViewerHandle {
@@ -132,6 +134,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   onOpenLinkedDoc,
   linkedDocInfo,
   imageBaseDir,
+  copyLabel,
 }, ref) => {
   const [copied, setCopied] = useState(false);
   const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
@@ -522,7 +525,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
           <button
             onClick={handleCopyPlan}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground bg-muted/50 hover:bg-muted rounded-md transition-colors"
-            title={copied ? 'Copied!' : linkedDocInfo ? 'Copy file' : 'Copy plan'}
+            title={copied ? 'Copied!' : copyLabel || (linkedDocInfo ? 'Copy file' : 'Copy plan')}
           >
             {copied ? (
               <>
@@ -536,12 +539,13 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                 </svg>
-                <span className="md:hidden">Copy</span><span className="hidden md:inline">{linkedDocInfo ? 'Copy file' : 'Copy plan'}</span>
+                <span className="md:hidden">Copy</span><span className="hidden md:inline">{copyLabel || (linkedDocInfo ? 'Copy file' : 'Copy plan')}</span>
               </>
             )}
           </button>
         </div>
         {frontmatter && <><div className="clear-right md:hidden" /><FrontmatterCard frontmatter={frontmatter} /></>}
+        {!frontmatter && blocks.length > 0 && blocks[0].type !== 'heading' && <div className="mt-4" />}
         {groupBlocks(blocks).map(group =>
           group.type === 'list-group' ? (
             <div key={group.key} data-pinpoint-group="list" className="py-1 -mx-2 px-2">

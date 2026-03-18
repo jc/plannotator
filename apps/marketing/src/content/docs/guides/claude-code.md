@@ -69,15 +69,25 @@ If you want to approve with minor notes, use "Send Feedback" — Claude will see
 
 ## Slash commands
 
-The plugin registers two slash commands that work inside your Claude Code session:
+The plugin registers three slash commands that work inside your Claude Code session:
 
 ### `/plannotator-review`
 
-Opens a code review UI for your uncommitted `git diff`. See the [code review docs](/docs/commands/code-review/) for details.
+Opens a code review UI for your uncommitted `git diff`. Also supports reviewing GitHub pull requests:
+
+```
+/plannotator-review https://github.com/owner/repo/pull/123
+```
+
+See the [code review docs](/docs/commands/code-review/) for details.
 
 ### `/plannotator-annotate <file.md>`
 
 Opens any markdown file in the annotation UI. See the [annotate docs](/docs/commands/annotate/) for details.
+
+### `/plannotator-last`
+
+Annotates the agent's most recent message. See the [annotate last docs](/docs/commands/annotate-last/) for details.
 
 ## Plugin installation
 

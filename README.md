@@ -34,8 +34,9 @@ Interactive Plan & Code Review for AI Coding Agents. Mark up and refine your pla
 <table>
 <tr><td><strong>Visual Plan Review</strong></td><td>Built-in hook</td><td>Approve or deny agent plans with inline annotations</td></tr>
 <tr><td><strong>Plan Diff</strong></td><td>Automatic</td><td>See what changed when the agent revises a plan</td></tr>
-<tr><td><strong>Code Review</strong></td><td><code>/plannotator-review</code></td><td>Review git diffs with line-level annotations</td></tr>
+<tr><td><strong>Code Review</strong></td><td><code>/plannotator-review</code></td><td>Review git diffs or GitHub PRs with line-level annotations</td></tr>
 <tr><td><strong>Annotate Any File</strong></td><td><code>/plannotator-annotate</code></td><td>Annotate any markdown file and send feedback to your agent</td></tr>
+<tr><td><strong>Annotate Last Message</strong></td><td><code>/plannotator-last</code></td><td>Annotate the agent's last response and send structured feedback</td></tr>
 </table>
 
 Code review now includes per-file checkpoints: once you mark a file reviewed, later sessions can default to a **delta** view that shows only changes introduced after your last reviewed revision. This is a linear, snapshot/content-based workflow (no rename/remap semantics yet).
@@ -144,7 +145,9 @@ irm https://plannotator.ai/install.ps1 | iex
 
 ```
 !plannotator review           # Code review for current changes
+!plannotator review <pr-url>  # Review a GitHub pull request
 !plannotator annotate file.md # Annotate a markdown file
+!plannotator last             # Annotate the last agent message
 ```
 
 Plan mode is not yet supported.

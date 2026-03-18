@@ -126,17 +126,17 @@ mkdir -p "$CLAUDE_COMMANDS_DIR"
 
 cat > "$CLAUDE_COMMANDS_DIR/plannotator-review.md" << 'COMMAND_EOF'
 ---
-description: Open interactive code review for current changes
+description: Open interactive code review for current changes or a PR URL
 allowed-tools: Bash(plannotator:*)
 ---
 
 ## Code Review Feedback
 
-!`plannotator review`
+!`plannotator review $ARGUMENTS`
 
 ## Your task
 
-Address the code review feedback above. The user has reviewed your changes in the Plannotator UI and provided specific annotations and comments.
+If the review above contains feedback or annotations, address them. If no changes were requested, acknowledge and continue.
 COMMAND_EOF
 
 echo "Installed /plannotator-review command to ${CLAUDE_COMMANDS_DIR}/plannotator-review.md"
@@ -158,6 +158,24 @@ Address the annotation feedback above. The user has reviewed the markdown file a
 COMMAND_EOF
 
 echo "Installed /plannotator-annotate command to ${CLAUDE_COMMANDS_DIR}/plannotator-annotate.md"
+
+# Install /plannotator-last slash command for Claude Code
+cat > "$CLAUDE_COMMANDS_DIR/plannotator-last.md" << 'COMMAND_EOF'
+---
+description: Annotate the last rendered assistant message
+allowed-tools: Bash(plannotator:*)
+---
+
+## Message Annotations
+
+!`plannotator annotate-last`
+
+## Your task
+
+Address the annotation feedback above. The user has reviewed your last message and provided specific annotations and comments.
+COMMAND_EOF
+
+echo "Installed /plannotator-last command to ${CLAUDE_COMMANDS_DIR}/plannotator-last.md"
 
 # Install OpenCode slash command
 OPENCODE_COMMANDS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/command"
@@ -186,6 +204,15 @@ COMMAND_EOF
 
 echo "Installed /plannotator-annotate command to ${OPENCODE_COMMANDS_DIR}/plannotator-annotate.md"
 
+# Install /plannotator-last slash command for OpenCode
+cat > "$OPENCODE_COMMANDS_DIR/plannotator-last.md" << 'COMMAND_EOF'
+---
+description: Annotate the last assistant message
+---
+COMMAND_EOF
+
+echo "Installed /plannotator-last command to ${OPENCODE_COMMANDS_DIR}/plannotator-last.md"
+
 echo ""
 echo "=========================================="
 echo "  OPENCODE USERS"
@@ -195,7 +222,7 @@ echo "Add the plugin to your opencode.json:"
 echo ""
 echo '  "plugin": ["@plannotator/opencode@latest"]'
 echo ""
-echo "Then restart OpenCode. The /plannotator-review and /plannotator-annotate commands are ready!"
+echo "Then restart OpenCode. The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready!"
 echo ""
 echo "=========================================="
 echo "  PI USERS"
@@ -213,7 +240,7 @@ echo "Install the Claude Code plugin:"
 echo "  /plugin marketplace add backnotprop/plannotator"
 echo "  /plugin install plannotator@plannotator"
 echo ""
-echo "The /plannotator-review and /plannotator-annotate commands are ready to use after you restart Claude Code!"
+echo "The /plannotator-review, /plannotator-annotate, and /plannotator-last commands are ready to use after you restart Claude Code!"
 
 # Warn if plannotator is configured in both settings.json hooks AND the plugin (causes double execution)
 # Only warn when the plugin is installed — manual-only users won't have overlap

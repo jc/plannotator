@@ -80,9 +80,10 @@ const App: React.FC = () => {
   });
   const [uiPrefs, setUiPrefs] = useState(() => getUIPreferences());
   const [isApiMode, setIsApiMode] = useState(false);
-  const [origin, setOrigin] = useState<'claude-code' | 'opencode' | 'pi' | null>(null);
+  const [origin, setOrigin] = useState<'claude-code' | 'opencode' | 'pi' | 'codex' | null>(null);
   const [globalAttachments, setGlobalAttachments] = useState<ImageAttachment[]>([]);
   const [annotateMode, setAnnotateMode] = useState(false);
+  const [annotateSource, setAnnotateSource] = useState<'file' | 'message' | null>(null);
   const [imageBaseDir, setImageBaseDir] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -324,11 +325,14 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: 'claude-code' | 'opencode' | 'pi'; mode?: 'annotate'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
+      .then((data: { plan: string; origin?: 'claude-code' | 'opencode' | 'pi' | 'codex'; mode?: 'annotate' | 'annotate-last'; filePath?: string; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string } }) => {
         if (data.plan) setMarkdown(data.plan);
         setIsApiMode(true);
-        if (data.mode === 'annotate') {
+        if (data.mode === 'annotate' || data.mode === 'annotate-last') {
           setAnnotateMode(true);
+        }
+        if (data.mode) {
+          setAnnotateSource(data.mode === 'annotate-last' ? 'message' : 'file');
         }
         if (data.filePath) {
           setImageBaseDir(data.filePath.replace(/\/[^/]+$/, ''));
@@ -757,7 +761,7 @@ const App: React.FC = () => {
     }
 
     let output = hasPlanAnnotations
-      ? exportAnnotations(blocks, annotations, globalAttachments)
+      ? exportAnnotations(blocks, annotations, globalAttachments, annotateSource === 'message' ? 'Message Feedback' : annotateSource === 'file' ? 'File Feedback' : 'Plan Feedback', annotateSource ?? 'plan')
       : '';
 
     if (hasDocAnnotations) {
@@ -898,6 +902,7 @@ const App: React.FC = () => {
     if (origin === 'opencode') return 'OpenCode';
     if (origin === 'claude-code') return 'Claude Code';
     if (origin === 'pi') return 'Pi';
+    if (origin === 'codex') return 'Codex';
     return 'Coding Agent';
   }, [origin]);
 
@@ -1306,6 +1311,7 @@ const App: React.FC = () => {
                   onOpenLinkedDoc={handleOpenLinkedDoc}
                   linkedDocInfo={linkedDocHook.isActive ? { filepath: linkedDocHook.filepath!, onBack: handleLinkedDocBack, label: vaultBrowser.activeFile ? 'Vault File' : undefined } : null}
                   imageBaseDir={imageBaseDir}
+                  copyLabel={annotateSource === 'message' ? 'Copy message' : annotateSource === 'file' ? 'Copy file' : undefined}
                 />
               </div>
             </div>
@@ -1448,7 +1454,7 @@ const App: React.FC = () => {
             submitted === 'approved'
               ? `${agentName} will proceed with the implementation.`
               : annotateMode
-                ? `${agentName} will address your annotations on the file.`
+                ? `${agentName} will address your annotations on the ${annotateSource === 'message' ? 'message' : 'file'}.`
                 : `${agentName} will revise the plan based on your annotations.`
           }
           agentLabel={agentName}

@@ -11,7 +11,7 @@ function getInstallCommand(): string {
 }
 
 interface UpdateBannerProps {
-  origin?: 'claude-code' | 'opencode' | 'pi' | null;
+  origin?: 'claude-code' | 'opencode' | 'pi' | 'codex' | null;
 }
 
 export const UpdateBanner: React.FC<UpdateBannerProps> = ({ origin }) => {

@@ -9,6 +9,7 @@
     "./review-core": "./review-core.ts",
     "./review-state-core": "./review-state-core.ts",
     "./checklist": "./checklist.ts",
-    "./types": "./types.ts"
+    "./types": "./types.ts",
+    "./pr-provider": "./pr-provider.ts"
   }
 }

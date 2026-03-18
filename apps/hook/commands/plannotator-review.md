@@ -1,11 +1,11 @@
 ---
-description: Open interactive code review for current changes
+description: Open interactive code review for current changes or a PR URL
 allowed-tools: Bash(plannotator:*)
 ---
 
 ## Code Review Feedback
 
-!`plannotator review`
+!`plannotator review $ARGUMENTS`
 
 ## Your task
 

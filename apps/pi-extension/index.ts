@@ -358,6 +358,60 @@ export default function plannotator(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("plannotator-last", {
+    description: "Annotate the last assistant message",
+    handler: async (args, ctx) => {
+      if (!planHtmlContent) {
+        ctx.ui.notify("Annotation UI not available. Run 'bun run build' in the pi-extension directory.", "error");
+        return;
+      }
+
+      const entries = ctx.sessionManager.getEntries();
+      let lastText: string | null = null;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i] as { type: string; message?: AgentMessage };
+        if (entry.type === "message" && entry.message && isAssistantMessage(entry.message)) {
+          const text = getTextContent(entry.message);
+          if (text.trim()) {
+            lastText = text;
+            break;
+          }
+        }
+      }
+
+      if (!lastText) {
+        ctx.ui.notify("No assistant message found in session.", "error");
+        return;
+      }
+
+      ctx.ui.notify("Opening annotation UI for last message...", "info");
+
+      let server: AnnotateServerResult;
+      try {
+        server = await startAnnotateServer({
+          markdown: lastText,
+          filePath: "last-message",
+          origin: "pi",
+          mode: "annotate-last",
+          htmlContent: planHtmlContent,
+        });
+      } catch (err) {
+        ctx.ui.notify(`Failed to start annotation UI: ${getStartupErrorMessage(err)}`, "error");
+        return;
+      }
+
+      const result = await runBrowserReview(server, ctx);
+
+      if (result.feedback) {
+        pi.sendUserMessage(
+          `# Message Annotations\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
+        );
+      } else {
+        ctx.ui.notify("Annotation closed (no feedback).", "info");
+      }
+    },
+  });
+
   pi.registerShortcut(Key.ctrlAlt("p"), {
     description: "Toggle plannotator",
     handler: async (ctx) => togglePlanMode(ctx),

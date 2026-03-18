@@ -54,7 +54,8 @@ echo ""
 # Build the plugin (includes building dependencies)
 echo "Building plugin..."
 cd "$PROJECT_ROOT"
-bun run build:review > /dev/null 2>&1  # Required for opencode build
+bun run build:hook > /dev/null 2>&1   # Required: opencode copies HTML from hook dist
+bun run build:review > /dev/null 2>&1 # Required: opencode copies HTML from review dist
 bun run build:opencode
 echo ""
 

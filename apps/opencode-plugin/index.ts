@@ -31,9 +31,13 @@ import {
   startAnnotateServer,
   handleAnnotateServerReady,
 } from "@plannotator/server/annotate";
-import { getGitContext, runGitDiff } from "@plannotator/server/git";
 import { writeRemoteShareLink } from "@plannotator/server/share-url";
-import { resolveMarkdownFile } from "@plannotator/server/resolve-file";
+import {
+  handleReviewCommand,
+  handleAnnotateCommand,
+  handleAnnotateLastCommand,
+  type CommandDeps,
+} from "./commands";
 import { planDenyFeedback } from "@plannotator/shared/feedback-templates";
 import {
   getPlanDirectory,
@@ -56,9 +60,13 @@ const DEFAULT_PLAN_TIMEOUT_SECONDS = 345_600; // 96 hours
 function getPlanningPrompt(planDir: string): string {
   return `## Plannotator — Iterative Planning
 
-Your plan files must live in this directory:
+**CRITICAL: Do NOT use TodoWrite for planning. Do NOT write plans to the current working directory.**
+
+Write all plan files to this global directory:
 
 ${planDir}
+
+Create the directory with \`mkdir -p ${planDir}\` if it does not exist.
 
 You must not edit the codebase during planning. The only files you may create or edit are plan markdown files inside that directory. Do not run destructive shell commands (rm, git push, npm install, etc.).
 
@@ -112,7 +120,16 @@ Your turn should only end by either:
 - Using the question tool to ask the user for information.
 - Calling submit_plan when the plan is ready for review.
 
-Do not end your turn without doing one of these two things.`;
+Do not end your turn without doing one of these two things.
+
+### Summary — Required workflow
+
+1. **Explore** the codebase to understand the task.
+2. **Ask** the user clarifying questions using the \`question\` tool (not plain text).
+3. **Write** a plan markdown file to \`${planDir}\` — never the current working directory, never TodoWrite.
+4. **Submit** by calling \`submit_plan\` with the absolute file path.
+
+Do not skip or reorder these steps. Do not use TodoWrite as a substitute for writing a plan file.`;
 }
 
 // ── Plugin ────────────────────────────────────────────────────────────────
@@ -165,14 +182,38 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
   return {
     // Register submit_plan as primary-only tool (hidden from sub-agents by default)
     config: async (opencodeConfig) => {
-      if (allowSubagents()) return;
+      if (!allowSubagents()) {
+        const existingPrimaryTools = opencodeConfig.experimental?.primary_tools ?? [];
+        if (!existingPrimaryTools.includes("submit_plan")) {
+          opencodeConfig.experimental = {
+            ...opencodeConfig.experimental,
+            primary_tools: [...existingPrimaryTools, "submit_plan"],
+          };
+        }
+      }
 
-      const existingPrimaryTools = opencodeConfig.experimental?.primary_tools ?? [];
-      if (!existingPrimaryTools.includes("submit_plan")) {
-        opencodeConfig.experimental = {
-          ...opencodeConfig.experimental,
-          primary_tools: [...existingPrimaryTools, "submit_plan"],
-        };
+      // Allow the plan agent to write .md files anywhere.
+      // OpenCode's built-in plan agent uses relative-path globs that break
+      // when worktree != cwd (non-git projects). Per-agent config merges
+      // last (agent.ts:232), so this only affects the plan agent.
+      opencodeConfig.agent ??= {};
+      opencodeConfig.agent.plan ??= {};
+      opencodeConfig.agent.plan.permission ??= {};
+      opencodeConfig.agent.plan.permission.edit = {
+        ...opencodeConfig.agent.plan.permission.edit,
+        "*.md": "allow",
+      };
+    },
+
+    // Strip OpenCode's built-in "STRICTLY FORBIDDEN" plan mode prompt from
+    // synthetic user message parts. The plugin's system prompt injection is
+    // the full replacement — this removes the conflicting original.
+    "experimental.chat.messages.transform": async (input, output) => {
+      for (const message of output.messages) {
+        if (message.info.role !== "user") continue;
+        message.parts = message.parts.filter(
+          (part: any) => !(part.type === "text" && part.text?.includes("STRICTLY FORBIDDEN"))
+        );
       }
     },
 
@@ -181,6 +222,10 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
       if (input.toolID === "plan_exit") {
         output.description =
           "Do not call this tool. Use submit_plan instead — it opens a visual review UI for plan approval.";
+      }
+      if (input.toolID === "todowrite") {
+        output.description =
+          "Track implementation progress by creating and updating task checklists. Only use this after a plan has been approved — not for planning itself. For planning, write a plan file and call submit_plan.";
       }
     },
 
@@ -236,12 +281,63 @@ export const PlannotatorPlugin: Plugin = async (ctx) => {
         // Skip injection on any error (safer)
         return;
       }
-
-      // Plan agent: inject full iterative planning prompt
       if (lastUserAgent === "plan") {
         const planDir = getPlanDirectory();
         output.system = stripConflictingPlanModeRules(output.system);
-        output.system.push(getPlanningPrompt(planDir));
+        // Replace conflicting instructions in the base prompt
+        output.system = output.system.map((s: string) =>
+          s
+            .replace("This includes markdown files.", `Exception: you must create plan markdown files in ${planDir}.`)
+            .replace("These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable.", `Do not use TodoWrite for planning. Instead, write your plan as a markdown file in ${planDir} and call submit_plan.`)
+            .replace("Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.", "TodoWrite is for tracking implementation progress only, not for planning.")
+            .replace("- Use the TodoWrite tool to plan the task if required", `- Write your plan to ${planDir} and call submit_plan`)
+            .replace("IMPORTANT: Always use the TodoWrite tool to plan and track tasks throughout the conversation.", `IMPORTANT: In plan mode, always write a plan file to ${planDir} and call submit_plan. Do not use TodoWrite for planning.`)
+            .replace("Let me first use the TodoWrite tool to plan this task.", "Let me first write a plan file and submit it for review.")
+            .replace("You have access to the TodoWrite tools to help you manage and plan tasks.", "You have access to the TodoWrite tools to help you track implementation tasks.")
+            .replace(
+              `<example>
+user: Help me write a new feature that allows users to track their usage metrics and export them to various formats
+assistant: I'll help you implement a usage metrics tracking and export feature. Let me first write a plan file and submit it for review.
+Adding the following todos to the todo list:
+1. Research existing metrics tracking in the codebase
+2. Design the metrics collection system
+3. Implement core metrics tracking functionality
+4. Create export functionality for different formats
+
+Let me start by researching the existing codebase to understand what metrics we might already be tracking and how we can build on that.
+
+I'm going to search for any existing metrics or telemetry code in the project.
+
+I've found some existing telemetry code. Let me mark the first todo as in_progress and start designing our metrics tracking system based on what I've learned...
+
+[Assistant continues implementing the feature step by step, marking todos as in_progress and completed as they go]
+</example>`,
+              `<example>
+user: Help me write a new feature that allows users to track their usage metrics and export them to various formats
+assistant: I'll write a plan for this feature. Let me first explore the codebase to understand existing patterns.
+
+[Assistant explores code, asks clarifying questions using the question tool]
+
+Now I'll write the plan file.
+
+[Assistant writes plan markdown to ${planDir}/usage-metrics.md]
+
+[Assistant calls submit_plan with the absolute path to open the review UI]
+</example>`)
+        );
+        // Final sweep: replace any remaining TodoWrite/todo references in plan mode
+        output.system = output.system.map((s: string) =>
+          s
+            .replace(/TodoWrite/g, "submit_plan")
+            .replace(/todowrite/gi, "submit_plan")
+            .replace(/todo list/gi, "plan file")
+            .replace(/todo items/gi, "plan steps")
+            .replace(/todos/gi, "plan steps")
+        );
+        const prompt = getPlanningPrompt(planDir);
+        output.system.push(prompt);
+        // Append a short reinforcement reminder at the very end of system prompt
+        output.system.push(`<system-reminder>You are in PLAN MODE. The user has asked you to plan, not execute. Explore the codebase, ask clarifying questions using the question tool, and finalize your plan in a markdown file written to ${planDir}. Then call submit_plan with the absolute path. Do not use the todowrite tool. Do not create todos. The plan file is your only output.</system-reminder>`);
         return;
       }
 
@@ -263,161 +359,76 @@ Do NOT proceed with implementation until your plan is approved.
 `);
     },
 
-    // Listen for slash commands
+    // Intercept plannotator-last before the agent sees the command
+    "command.execute.before": async (input, output) => {
+      if (input.command !== "plannotator-last") return;
+
+      // Clear parts so the agent doesn't respond to the command body
+      output.parts = [];
+
+      const deps: CommandDeps = {
+        client: ctx.client,
+        htmlContent,
+        reviewHtmlContent,
+        getSharingEnabled,
+        getShareBaseUrl,
+        directory: ctx.directory,
+      };
+
+      // Fetch last message, run annotation server, get feedback
+      const feedback = await handleAnnotateLastCommand(
+        { properties: { sessionID: input.sessionID } },
+        deps
+      );
+
+      // Send feedback as a new prompt — same pattern as review/annotate
+      if (feedback) {
+        try {
+          await ctx.client.session.prompt({
+            path: { id: input.sessionID },
+            body: {
+              parts: [{
+                type: "text",
+                text: `# Message Annotations\n\n${feedback}\n\nPlease address the annotation feedback above.`,
+              }],
+            },
+          });
+        } catch {
+          // Session may not be available
+        }
+      }
+    },
+
+    // Listen for slash commands (review + annotate)
     event: async ({ event }) => {
       const isCommandEvent =
         event.type === "command.executed" ||
         event.type === "tui.command.execute";
 
+      if (!isCommandEvent) return;
+
       // @ts-ignore - Event structure varies
       const commandName = event.properties?.name || event.command || event.payload?.name;
-      const isReviewCommand = commandName === "plannotator-review";
 
-      if (isCommandEvent && isReviewCommand) {
-        ctx.client.app.log({
-          level: "info",
-          message: "Opening code review UI...",
-        });
+      const deps: CommandDeps = {
+        client: ctx.client,
+        htmlContent,
+        reviewHtmlContent,
+        getSharingEnabled,
+        getShareBaseUrl,
+        directory: ctx.directory,
+      };
 
-        const gitContext = await getGitContext();
-        const { patch: rawPatch, label: gitRef, error: diffError } = await runGitDiff(
-          "uncommitted",
-          gitContext.defaultBranch
-        );
-
-        const server = await startReviewServer({
-          rawPatch,
-          gitRef,
-          error: diffError,
-          origin: "opencode",
-          diffType: "uncommitted",
-          gitContext,
-          sharingEnabled: await getSharingEnabled(),
-          shareBaseUrl: getShareBaseUrl(),
-          htmlContent: reviewHtmlContent,
-          opencodeClient: ctx.client,
-          onReady: handleReviewServerReady,
-        });
-
-        const result = await server.waitForDecision();
-        await Bun.sleep(1500);
-        server.stop();
-
-        if (result.feedback) {
-          // @ts-ignore - Event properties contain sessionID
-          const sessionId = event.properties?.sessionID;
-
-          if (sessionId) {
-            const shouldSwitchAgent = result.agentSwitch && result.agentSwitch !== 'disabled';
-            const targetAgent = result.agentSwitch || 'build';
-
-            const message = result.approved
-              ? `# Code Review\n\nCode review completed — no changes requested.`
-              : `# Code Review Feedback\n\n${result.feedback}\n\nPlease address this feedback.`;
-
-            try {
-              await ctx.client.session.prompt({
-                path: { id: sessionId },
-                body: {
-                  ...(shouldSwitchAgent && { agent: targetAgent }),
-                  parts: [{ type: "text", text: message }],
-                },
-              });
-            } catch {
-              // Session may not be available
-            }
-          }
-        }
-      }
-
-      // Handle /plannotator-annotate command
-      const isAnnotateCommand = commandName === "plannotator-annotate";
-
-      if (isCommandEvent && isAnnotateCommand) {
-        // @ts-ignore - Event properties contain arguments
-        const filePath = event.properties?.arguments || event.arguments || "";
-
-        if (!filePath) {
-          ctx.client.app.log({
-            level: "error",
-            message: "Usage: /plannotator-annotate <file.md>",
-          });
-          return;
-        }
-
-        ctx.client.app.log({
-          level: "info",
-          message: `Opening annotation UI for ${filePath}...`,
-        });
-
-        const projectRoot = process.cwd();
-        const resolved = await resolveMarkdownFile(filePath, projectRoot);
-
-        if (resolved.kind === "ambiguous") {
-          ctx.client.app.log({
-            level: "error",
-            message: `Ambiguous filename "${resolved.input}" — found ${resolved.matches.length} matches:\n${resolved.matches.map((m) => `  ${m}`).join("\n")}`,
-          });
-          return;
-        }
-        if (resolved.kind === "not_found") {
-          ctx.client.app.log({
-            level: "error",
-            message: `File not found: ${resolved.input}`,
-          });
-          return;
-        }
-
-        const absolutePath = resolved.path;
-        ctx.client.app.log({
-          level: "info",
-          message: `Resolved: ${absolutePath}`,
-        });
-        const markdown = await Bun.file(absolutePath).text();
-
-        const server = await startAnnotateServer({
-          markdown,
-          filePath: absolutePath,
-          origin: "opencode",
-          sharingEnabled: await getSharingEnabled(),
-          shareBaseUrl: getShareBaseUrl(),
-          htmlContent: htmlContent,
-          onReady: handleAnnotateServerReady,
-        });
-
-        const result = await server.waitForDecision();
-        await Bun.sleep(1500);
-        server.stop();
-
-        if (result.feedback) {
-          // @ts-ignore - Event properties contain sessionID
-          const sessionId = event.properties?.sessionID;
-
-          if (sessionId) {
-            try {
-              await ctx.client.session.prompt({
-                path: { id: sessionId },
-                body: {
-                  parts: [
-                    {
-                      type: "text",
-                      text: `# Markdown Annotations\n\nFile: ${absolutePath}\n\n${result.feedback}\n\nPlease address the annotation feedback above.`,
-                    },
-                  ],
-                },
-              });
-            } catch {
-              // Session may not be available
-            }
-          }
-        }
-      }
+      if (commandName === "plannotator-review")
+        return handleReviewCommand(event, deps);
+      if (commandName === "plannotator-annotate")
+        return handleAnnotateCommand(event, deps);
     },
 
     tool: {
       submit_plan: tool({
         description:
-          "Submit your plan file for interactive user review. The user can annotate, approve, or request changes in a visual browser UI. Pass the absolute path to your plan file.",
+          "Use this tool to create and submit plans. When the user asks you to plan something, follow the planning process: explore the codebase, ask clarifying questions, then write your plan as a markdown file. After following the planning process, call this tool with the absolute file path to open an interactive review UI where the user can annotate, approve, or request changes.",
         args: {
           path: tool.schema
             .string()
