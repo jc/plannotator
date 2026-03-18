@@ -729,6 +729,7 @@ const reviewRuntime: ReviewGitRuntime = {
     const result = spawnSync("git", args, {
       cwd: options?.cwd,
       encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
     });
     return {
       stdout: result.stdout ?? "",
