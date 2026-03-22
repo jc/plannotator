@@ -4,6 +4,17 @@
 
 # Plannotator
 
+> [!IMPORTANT]
+> This repository is a customized fork of [backnotprop/plannotator](https://github.com/backnotprop/plannotator).
+>
+> **What this fork adds**
+> - **Per-file review checkpoints** so reviewed files can stay marked across later review sessions
+> - **Checkpoint-based delta review** that can focus on changes since the last reviewed revision for each file
+> - **Faster review navigation** with checkpoint-aware shortcuts, including jumping between unreviewed files
+> - **Better handling for large diffs** in the Pi server path
+>
+> The rest of this README largely follows upstream so future syncs stay simple.
+
 Interactive Plan & Code Review for AI Coding Agents. Mark up and refine your plans or code diffs using a visual UI, share for team collaboration, and seamlessly integrate with **Claude Code**, **OpenCode**, **Pi**, and **Codex**.
 
 **Plan Mode Demos:**
